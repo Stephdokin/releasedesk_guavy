@@ -1,0 +1,756 @@
+# Brand scopes: how each instrument should look when Gemini draws it.
+#
+# Ported from COIN_VISUALS in the first Guavynator, at
+# ~/Documents/1 Guavy/Guavynator/guavynator/app.py, and extended to the three
+# markets that desk never covered.
+#
+# Six crypto entries were rewritten on the way across. The originals leaned on
+# "rising", "surge", "rally", "moon" and "digital gold bars stacking in
+# infinite supply", which the current claims rules will not carry: a picture
+# may not imply a market going up, and heaps of treasure are out. Each now
+# describes the asset itself rather than what anyone might make from it.
+#
+#   name    what it is called in the copy
+#   colour  its palette, which overrides the house teal for the subject
+#   mark    its published symbol, when it has one
+#   visual  the scene to draw. Concrete nouns, no motion words, no outcome.
+#
+# A symbol with no entry falls back to the house style alone, which is safe
+# but generic. Add one rather than letting that happen twice.
+crypto:
+  BTC:
+    name: Bitcoin
+    colour: Bitcoin orange (#F7931A) and gold
+    mark: bold orange Bitcoin '₿' symbol with glowing edges
+    visual: interconnected orange hexagonal blockchain nodes pulsing with warm amber light, a dense
+      proof-of-work lattice, patient monetary machinery
+  ETH:
+    name: Ethereum
+    colour: vibrant blue (#3C3C3D grey accents) and multicolored gradients
+    mark: geometric diamond octahedron in blue, black, and peach facets
+    visual: crystalline blue Ethereum prism refracting light beams, interconnected smart contract nodes,
+      electric innovation glow in cool ethereal tones
+  SOL:
+    name: Solana
+    colour: purple (#9945FF) to surge green (#00FFA3) gradient with cyan accents
+    mark: stacked angular parallelograms forming futuristic S in purple-green gradient
+    visual: purple-to-green energy streams racing across a horizon, cyan speed trails, dense parallel
+      throughput
+  ADA:
+    name: Cardano
+    colour: deep blue (#0033AD) with teal gradients
+    mark: circular starburst emblem of interconnected circles in rich blue
+    visual: elegant geometric blue lattice forming scientific precision, teal academic circuits, sustainable
+      proof-of-stake harmony in navy depths
+  XRP:
+    name: Ripple XRP
+    colour: dark blue and crisp white
+    mark: stylized blue 'X' with circuit-like connections
+    visual: rippling dark blue payment waves propagating globally, interconnected financial nodes, clean
+      white trust and efficiency accents
+  AVAX:
+    name: Avalanche
+    colour: bold red (#E84142) and white
+    mark: geometric white 'A' of angular triangles on solid red circle, evoking mountain peaks
+    visual: jagged crimson mountain peaks cascading like an unstoppable avalanche, pulsing red energy
+      bursts, bold scalability force and sub-second finality glow
+  DOT:
+    name: Polkadot
+    colour: vibrant pink (#FF2670) and black
+    mark: interlocking pink circles in a dotted pattern on black
+    visual: web of hot pink interconnected parachains, multicolor relay chain dots sparking innovation,
+      magenta multichain interoperability energy
+  MATIC:
+    name: Polygon
+    colour: vibrant purple (#7B3FE4) and violet
+    mark: hexagonal purple MATIC emblem with layered polygons
+    visual: intricate purple polygon mesh scaling Ethereum, violet layer-2 networks expanding, dynamic
+      scaling geometry glow
+  POL:
+    name: Polygon
+    colour: vibrant purple (#7B3FE4) and violet
+    mark: hexagonal purple POL emblem with layered polygons
+    visual: intricate purple polygon mesh scaling Ethereum, violet layer-2 networks expanding, dynamic
+      scaling geometry glow
+  LINK:
+    name: Chainlink
+    colour: deep blue and white
+    mark: hexagonal blue chain-link oracle node
+    visual: interlinked blue hexagonal oracles feeding real-world data streams, secure chain grid, reliable
+      decentralized connectivity glow
+  LTC:
+    name: Litecoin
+    colour: silver-grey and metallic chrome
+    mark: silver 'Ł' Litecoin emblem with polished shine
+    visual: shimmering silver metallic coins cascading, grey fast-transaction light reflections, lightweight
+      digital silver speed
+  ATOM:
+    name: Cosmos
+    colour: indigo and violet nebula
+    mark: indigo orbital atom rings with interconnected hubs
+    visual: cosmic indigo nebula with swirling atom orbitals, interconnected zones and IBC bridges,
+      sovereign blockchain universe expansion
+  NEAR:
+    name: NEAR Protocol
+    colour: black and stark white
+    mark: minimalist black NEAR wordmark with geometric accents
+    visual: clean black-and-white architectural minimalism, sharp lines of sharded scalability, high-contrast
+      futuristic protocol clarity
+  APT:
+    name: Aptos
+    colour: teal and clean white
+    mark: sleek teal Aptos geometric emblem
+    visual: teal wave forms of parallel execution running side by side, crisp white modular blockchain
+      structures, elegant high-performance finality
+  SUI:
+    name: Sui
+    colour: deep ocean blue and white
+    mark: fluid blue water-drop inspired Sui emblem
+    visual: graceful deep ocean blue fluid motion waves, elegant object-centric data flow lines, Move
+      language precision
+  INJ:
+    name: Injective
+    colour: electric blue and cyan
+    mark: angular blue INJ finance emblem
+    visual: electric blue DeFi exchange nodes pulsing, cyan plasma trading energy streams, high-speed
+      derivatives frontier
+  SEI:
+    name: Sei
+    colour: crimson red gradients
+    mark: sharp red Sei high-performance logo
+    visual: blurring crimson high-frequency trading streams, red speed-of-light execution blur, optimized
+      orderbook intensity
+  UNI:
+    name: Uniswap
+    colour: hot pink and magenta
+    mark: playful pink unicorn horn circle logo
+    visual: vibrant pink unicorn swapping colorful token streams, magenta automated liquidity pools,
+      decentralized exchange magic
+  AAVE:
+    name: Aave
+    colour: purple and ghostly white
+    mark: ethereal purple ghost-like Aave figure
+    visual: haunting purple ghost silhouette in flash loans, lending protocol mists, lavender decentralized
+      borrowing glow
+  CRV:
+    name: Curve Finance
+    colour: golden yellow and warm gold
+    mark: sleek gold CRV curve emblem
+    visual: smooth golden curve optimization lines, stablecoin liquidity pools converging, warm yield
+      farming radiance
+  MKR:
+    name: MakerDAO
+    colour: teal and emerald green
+    mark: teal Maker governance emblem
+    visual: teal stability grid securing DAI, emerald vault mechanisms locking collateral, decentralized
+      credit creation
+  COMP:
+    name: Compound
+    colour: emerald green gradients
+    mark: green Compound interest emblem
+    visual: emerald lending pools linked in a circuit, algorithmic money market plumbing, green supply
+      and borrow curves meeting
+  SNX:
+    name: Synthetix
+    colour: dark blue and cyan
+    mark: blue SNX synthetic debt mirror
+    visual: mirrored dark blue synthetic assets, cyan derivatives and forex streams, infinite synthetic
+      exposure
+  USDT:
+    name: Tether USDT
+    colour: tether green and white
+    mark: bold green Tether 'T' emblem
+    visual: calm stable green dollar-pegged streams, interlocking green tether circles, reliable reserve-backed
+      flow
+  USDC:
+    name: USD Coin
+    colour: regulated blue and white
+    mark: clean blue USDC coin emblem
+    visual: pristine blue dollar stability shield, white institutional trust circles, transparent regulated
+      calm
+  DAI:
+    name: Dai
+    colour: warm gold and soft cream
+    mark: golden DAI decentralized emblem
+    visual: soft warm gold over-collateralized stability, cream financial autonomy glow, decentralized
+      soft resilience
+  BNB:
+    name: BNB (Binance)
+    colour: gold yellow (#F0B90B) and amber
+    mark: diamond-shaped gold BNB emblem
+    visual: shining gold diamond exchange power, yellow Binance ecosystem energy, vast trading empire
+      glow
+  OKB:
+    name: OKB (OKX)
+    colour: dark navy and white
+    mark: precise dark blue OKB emblem
+    visual: structured dark navy exchange architecture, white precision trading lines, global utility
+      focus
+  CRO:
+    name: Cronos
+    colour: deep navy blue gradients
+    mark: shield-like dark blue Cronos emblem
+    visual: fortified navy blue financial shield, cold blue Cronos chain strength, secure ecosystem
+      defense
+  DOGE:
+    name: Dogecoin
+    colour: warm yellow-gold (#C2A633) and brown
+    mark: playful yellow Shiba Inu face on coin
+    visual: cheerful cartoon Shiba Inu grinning, warm golden meme-coin shine, lighthearted community
+      warmth
+  SHIB:
+    name: Shiba Inu
+    colour: fiery orange and red
+    mark: fierce orange Shiba Inu warrior coin
+    visual: intense orange Shiba Inu flames, burning red SHIB army energy, viral meme coin inferno
+  PEPE:
+    name: Pepe
+    colour: classic green and lime
+    mark: smug green Pepe the Frog coin
+    visual: iconic green frog smirk, lime internet culture chaos, rare meme liquidity vibes
+  WIF:
+    name: dogwifhat
+    colour: bright pink and magenta
+    mark: adorable pink knitted hat on dog coin
+    visual: tiny dog in oversized pink hat, playful magenta viral absurdity, pure meme rocket fuel
+  ARB:
+    name: Arbitrum
+    colour: sky blue and white
+    mark: clean blue Arbitrum orbit emblem
+    visual: sky blue optimistic rollup bridges to Ethereum, white high-speed scaling lines, seamless
+      layer-2 expansion
+  OP:
+    name: Optimism
+    colour: bold red and white
+    mark: vibrant red OP optimism emblem
+    visual: fiery red optimistic superchain energy, white rollup transaction streams, collective scaling
+      hope
+  STRK:
+    name: Starknet
+    colour: dark purple and metallic gold
+    mark: elegant purple Starknet ZK emblem
+    visual: intricate dark purple zero-knowledge proof lattice, gold mathematical validity glow, scalable
+      STARK precision
+  FET:
+    name: Fetch.ai
+    colour: teal and deep blue
+    mark: teal autonomous agent network logo
+    visual: teal AI economic agents collaborating, dark blue intelligent grid connections, decentralized
+      machine learning swarm
+  RENDER:
+    name: Render
+    colour: vibrant orange and black
+    mark: orange GPU render node emblem
+    visual: glowing orange distributed GPU render farm, black computation grid nodes, decentralized
+      3D rendering power
+  TAO:
+    name: Bittensor
+    colour: clean white and light grey
+    mark: white infinity TAO neural emblem
+    visual: infinite white neural subnet loops, silver machine intelligence expansion, peer-to-peer
+      AI incentive flow
+  AGIX:
+    name: SingularityNET
+    colour: purple and cyan
+    mark: purple singularity vortex logo
+    visual: swirling purple AGI singularity vortex, cyan neural marketplace pathways, decentralized
+      AI services explosion
+  XLM:
+    name: Stellar
+    colour: dark blue and bright white
+    mark: white Stellar constellation emblem
+    visual: cosmic dark blue stellar network, white star transaction streams crossing borders, inclusive
+      financial connectivity
+  ALGO:
+    name: Algorand
+    colour: pure black and white
+    mark: minimalist black Algorand geometric logo
+    visual: clean black-white pure proof-of-stake geometry, fast finality clarity, sustainable minimalist
+      blockchain
+  VET:
+    name: VeChain
+    colour: deep blue and teal
+    mark: blue VeChain enterprise emblem
+    visual: robust blue supply chain tracking networks, teal IoT sensor nodes, enterprise-grade transparency
+  HBAR:
+    name: Hedera
+    colour: dark purple and white
+    mark: purple Hedera hashgraph 'H'
+    visual: intricate dark purple hashgraph lattice gossip protocol, white high-throughput nodes, certified
+      enterprise speed
+  ICP:
+    name: Internet Computer
+    colour: vibrant rainbow gradient
+    mark: colorful infinity ICP emblem
+    visual: rainbow gradient decentralised cloud canvas, smart contract execution spreading across a
+      lattice, world computer vision
+  GRT:
+    name: The Graph
+    colour: purple and dark blue
+    mark: purple subgraph indexing logo
+    visual: interconnected purple query subgraphs, dark blue blockchain data indexing streams, decentralized
+      knowledge graph
+  LDO:
+    name: Lido
+    colour: teal and deep blue
+    mark: teal liquid staking emblem
+    visual: flowing teal liquid staking waves, dark blue staked ETH derivatives, secure pooled liquidity
+      calm
+  DASH:
+    name: Dash
+    colour: teal and dark blue
+    mark: swift teal Dash emblem
+    visual: rapid teal transaction dashes, blue instantSend and PrivateSend flow, digital cash evolution
+  ZEC:
+    name: Zcash
+    colour: gold and shielded yellow
+    mark: gold shielded Zcash 'Z' coin
+    visual: protective gold privacy shield, yellow zero-knowledge proof glow, shielded transaction secrecy
+  XMR:
+    name: Monero
+    colour: vibrant orange and stealth grey
+    mark: orange Monero 'M' privacy coin
+    visual: enveloping orange privacy ring signatures fog, grey anonymous bulletproof nodes, untraceable
+      transaction shadows
+  TRX:
+    name: Tron
+    colour: Tron red (#FF060A) and black
+    mark: the angular TRX triskelion
+    visual: red angular throughput channels, high-volume transfer lanes, a content network as flat planes
+  ENA:
+    name: Ethena
+    colour: Ethena off-white and deep slate
+    mark: the Ethena mark
+    visual: a synthetic dollar held level between two counterweights, delta-neutral geometry, collateral
+      in balance
+  QNT:
+    name: Quant
+    colour: Quant amber and charcoal
+    mark: the Quant Q
+    visual: interoperability gateways bridging separate ledgers, an overledger plane above networks
+  APE:
+    name: ApeCoin
+    colour: ApeCoin blue and white
+    mark: the APE mark
+    visual: a community token as membership geometry, ranked access tiers, a governance floor
+  RPL:
+    name: Rocket Pool
+    colour: Rocket Pool orange and deep navy
+    mark: the Rocket Pool mark
+    visual: pooled staking deposits as nested rings, node operators as distributed points, validator
+      geometry
+  PUMP:
+    name: Pump
+    colour: Pump green and black
+    mark: the PUMP wordmark
+    visual: token launch mechanics as bonding curves drawn abstractly, issuance rails
+  BCH:
+    name: Bitcoin Cash
+    colour: Bitcoin Cash green (#8DC351) and white
+    mark: the green ₿ mark
+    visual: wide green block lattice, larger blocks carrying more transfers, peer-to-peer cash geometry
+  JUP:
+    name: Jupiter
+    colour: Jupiter lime and space black
+    mark: the Jupiter planet mark
+    visual: aggregated routes converging through one gateway, liquidity paths braided on Solana
+  ONDO:
+    name: Ondo
+    colour: Ondo deep blue and white
+    mark: the Ondo mark
+    visual: treasury instruments tokenised as stacked certificates, institutional rails, real-world
+      assets on chain
+  WLD:
+    name: Worldcoin
+    colour: Worldcoin black, white and iridescent
+    mark: the World mark
+    visual: an iris pattern abstracted to concentric rings, proof-of-personhood as unique nodes
+  ENS:
+    name: Ethereum Name Service
+    colour: ENS blue-violet gradient
+    mark: the ENS mark
+    visual: a name resolving into an address, registry records as linked plates, a naming layer
+  STX:
+    name: Stacks
+    colour: Stacks purple and white
+    mark: the Stacks mark
+    visual: layered contracts anchoring down onto a Bitcoin base, settlement inheritance geometry
+  CAKE:
+    name: PancakeSwap
+    colour: PancakeSwap teal, brown and gold
+    mark: the pancake stack
+    visual: stacked rounds of liquidity, swap routes crossing, a yield farm laid out in plots
+  ZK:
+    name: ZKsync
+    colour: ZKsync white and black
+    mark: the ZKsync mark
+    visual: proofs compressing many transfers into one, validity geometry, a rollup batch folding
+  ETHFI:
+    name: Ether.fi
+    colour: Ether.fi violet and white
+    mark: the Ether.fi mark
+    visual: restaked deposits branching into several duties, liquid staking receipts as plates
+  ARKM:
+    name: Arkham
+    colour: Arkham red and black
+    mark: the Arkham mark
+    visual: an intelligence graph linking wallets to entities, deanonymised flows as traced lines
+  TRUMP:
+    name: Official Trump
+    colour: gold and deep navy
+    mark: the TRUMP wordmark
+    visual: a meme token as flat commemorative plate, issuance schedule as stepped blocks
+  ZRO:
+    name: LayerZero
+    colour: LayerZero black and white
+    mark: the LayerZero mark
+    visual: messages passing between separate chains, an omnichain endpoint lattice
+  BAL:
+    name: Balancer
+    colour: Balancer slate and white
+    mark: the Balancer mark
+    visual: weighted pools as unequal spheres held in balance, automated rebalancing geometry
+  SPELL:
+    name: Spell
+    colour: Spell purple and gold
+    mark: the Spell mark
+    visual: collateral conjured into a borrowed stable unit, lending geometry with a light touch of
+      the arcane
+  TRU:
+    name: TrueFi
+    colour: TrueFi blue and white
+    mark: the TrueFi mark
+    visual: uncollateralised credit lines drawn as spans, borrower reputation as weighted nodes
+  ATH:
+    name: Aethir
+    colour: Aethir teal and black
+    mark: the Aethir mark
+    visual: distributed GPU containers rented across regions, compute supply as a mesh
+stocks:
+  AAPL:
+    name: Apple
+    colour: brushed aluminium, white and soft graphite
+    mark: the Apple silhouette mark
+    visual: clean anodised aluminium surfaces, glass edges catching a soft line of light, precise machined
+      seams, quiet consumer-hardware minimalism
+  AMGN:
+    name: Amgen
+    colour: clinical blue and white
+    mark: the Amgen wordmark in blue
+    visual: laboratory glassware in ordered rows, protein ribbon structures drawn as flat diagram, clean
+      biotech research surfaces
+  AMZN:
+    name: Amazon
+    colour: Amazon orange (#FF9900) and dark slate
+    mark: the orange smile arrow
+    visual: stacked shipping cartons on a conveyor, warehouse aisle geometry receding, logistics and
+      fulfilment at scale
+  AXP:
+    name: American Express
+    colour: Amex blue (#006FCF) and white
+    mark: the blue box wordmark
+    visual: an embossed card edge catching light, clean financial-services geometry, travel and settlement
+      rails
+  BA:
+    name: Boeing
+    colour: Boeing blue and white
+    mark: the swept Boeing wordmark
+    visual: an airframe cross-section in flat elevation, wing ribs and stringers, aerospace assembly-hall
+      scale
+  CAT:
+    name: Caterpillar
+    colour: Caterpillar yellow (#FFCD11) and black
+    mark: the yellow CAT wordmark
+    visual: heavy machinery silhouettes on a worksite, track plates and hydraulic arms, earthmoving
+      and construction weight
+  CRM:
+    name: Salesforce
+    colour: Salesforce blue (#00A1E0) and cloud white
+    mark: the blue cloud mark
+    visual: linked cloud forms carrying customer records, soft enterprise-software geometry, connected
+      pipelines
+  CSCO:
+    name: Cisco
+    colour: Cisco blue (#1BA0D7) and dark navy
+    mark: the bridge-line Cisco mark
+    visual: network switch ports in a row, fibre runs braided into a trunk, routed traffic drawn as
+      flat lines
+  CVX:
+    name: Chevron
+    colour: Chevron blue and red
+    mark: the chevron hallmark
+    visual: refinery towers in silhouette, pipeline geometry, energy infrastructure at industrial scale
+  DIS:
+    name: Disney
+    colour: Disney blue and warm cream
+    mark: the Disney script wordmark
+    visual: a theatre proscenium and curtain, storybook architecture in flat planes, entertainment and
+      franchise craft
+  NVDA:
+    name: Nvidia
+    colour: Nvidia green (#76B900) and graphite
+    mark: the green eye mark
+    visual: a wafer of dies stepping across silicon, rack aisles of accelerators, lattice of parallel
+      compute
+  MSFT:
+    name: Microsoft
+    colour: segment blue, green, yellow and red on grey
+    mark: the four-square window
+    visual: four coloured panes tiling into a larger grid, datacentre halls, enterprise software at
+      scale
+  GOOGL:
+    name: Alphabet
+    colour: Google blue, red, yellow and green
+    mark: the four-colour G
+    visual: a search field opening into an index, ranked results as stacked planes, cloud regions linked
+  GOOG:
+    name: Alphabet
+    colour: Google blue, red, yellow and green
+    mark: the four-colour G
+    visual: a search field opening into an index, ranked results as stacked planes, cloud regions linked
+  JPM:
+    name: JPMorgan Chase
+    colour: Chase octagon blue and slate
+    mark: the blue octagon
+    visual: vault geometry and settlement rails, a clearing floor drawn as intersecting lines, balance-sheet
+      scale
+  GS:
+    name: Goldman Sachs
+    colour: Goldman blue and pale stone
+    mark: the Goldman Sachs wordmark
+    visual: a trading floor in flat elevation, order books as stacked bars of paper, underwriting and
+      advisory craft
+  KO:
+    name: Coca-Cola
+    colour: Coca-Cola red and white
+    mark: the Spencerian script
+    visual: a contour bottle silhouette, bottling line geometry, distribution crates stacked in rows
+  IBM:
+    name: IBM
+    colour: IBM blue and white
+    mark: the eight-bar striped wordmark
+    visual: horizontal striped bars resolving into a mainframe elevation, punched-card geometry, enterprise
+      computing
+  MRK:
+    name: Merck
+    colour: Merck teal-green and white
+    mark: the Merck wordmark
+    visual: vials in a filling line, a molecule drawn as flat ball-and-stick, clinical trial cohorts
+      as ranked dots
+  HON:
+    name: Honeywell
+    colour: Honeywell red and white
+    mark: the forward-slash H
+    visual: an aerospace control panel in flat elevation, industrial automation arms, building systems
+      schematic
+  HD:
+    name: Home Depot
+    colour: Home Depot orange and white
+    mark: the orange square wordmark
+    visual: an aisle of racked lumber receding, an orange apron silhouette, warehouse retail geometry
+  MCD:
+    name: McDonald's
+    colour: McDonald's red and golden yellow
+    mark: the golden arches
+    visual: arch geometry in flat planes, a drive-through lane ruled across a lot, franchise scale
+  V:
+    name: Visa
+    colour: Visa blue (#1A1F71) and gold
+    mark: the Visa wordmark
+    visual: a payment card edge, a settlement network as linked nodes, authorisation rails
+  UNH:
+    name: UnitedHealth
+    colour: UnitedHealth blue and white
+    mark: the layered U mark
+    visual: a claims flow drawn as branching channels, clinic architecture, coverage networks as a lattice
+  PG:
+    name: Procter & Gamble
+    colour: P&G blue and white
+    mark: the P&G monogram
+    visual: household goods in flat silhouette on a shelf run, packaging lines, consumer staples at
+      scale
+  JNJ:
+    name: Johnson & Johnson
+    colour: J&J red and white
+    mark: the script wordmark
+    visual: surgical instruments laid in a tray, a pharmaceutical vial, medical device geometry
+  NKE:
+    name: Nike
+    colour: Nike black, white and volt
+    mark: the swoosh
+    visual: a running shoe sole in profile, a track lane curving, athletic manufacturing craft
+  WMT:
+    name: Walmart
+    colour: Walmart blue and spark yellow
+    mark: the six-point spark
+    visual: a distribution centre dock line, pallets racked to the roof, supply-chain geometry at scale
+  SHW:
+    name: Sherwin-Williams
+    colour: Sherwin-Williams red and blue
+    mark: the Cover the Earth mark
+    visual: paint poured in a flat sheet, colour chips ranged in a fan, coatings plant geometry
+  MMM:
+    name: 3M
+    colour: 3M red and white
+    mark: the 3M wordmark
+    visual: layered adhesive films peeling apart, abrasives and tapes as flat strata, industrial laboratory
+      craft
+  DOW:
+    name: Dow
+    colour: Dow red and white
+    mark: the diamond wordmark
+    visual: polymer chains as linked geometry, a cracker tower in silhouette, materials-science plant
+  TRV:
+    name: Travelers
+    colour: Travelers red and white
+    mark: the red umbrella
+    visual: an umbrella canopy in flat planes, risk pooled as concentric rings, underwriting ledgers
+forex:
+  USD:
+    name: US Dollar
+    colour: dollar green and engraved grey
+    mark: the $ sign engraved
+    visual: engraved intaglio linework of a banknote plate, treasury architecture columns, the world's
+      reserve settlement layer
+  EUR:
+    name: Euro
+    colour: EU blue (#003399) and gold
+    mark: the euro sign with its two bars
+    visual: a ring of stars flattened into geometry, bridge arches from the note series, a single currency
+      across many states
+  JPY:
+    name: Japanese Yen
+    colour: deep indigo and vermilion
+    mark: the yen sign with its two strokes
+    visual: asanoha lattice pattern, a torii silhouette reduced to two lines, precise minimal Japanese
+      geometry
+  GBP:
+    name: British Pound
+    colour: British racing green and oxblood
+    mark: the sterling sign
+    visual: a portcullis motif, the geometry of Threadneedle Street stonework, the oldest continuous
+      currency
+  CHF:
+    name: Swiss Franc
+    colour: Swiss red and white
+    mark: the CHF wordmark in red
+    visual: alpine ridgelines as flat facets, vault geometry and precision watch bridges, neutrality
+      and safekeeping
+  CAD:
+    name: Canadian Dollar
+    colour: maple red and white
+    mark: the maple leaf
+    visual: a maple leaf reduced to clean facets, prairie grain elevators and rail, a resource-backed
+      currency
+  AUD:
+    name: Australian Dollar
+    colour: ochre, eucalyptus green and gold
+    mark: the AUD wordmark
+    visual: iron-ore country ridgelines in ochre, dot-pattern ground texture, a commodity-linked currency
+  NZD:
+    name: New Zealand Dollar
+    colour: silver fern black and white
+    mark: the silver fern
+    visual: a silver fern unfurling, koru spiral geometry, pasture and export terraces
+commodities:
+  Gold:
+    name: Gold
+    colour: deep amber and warm metal
+    mark: a cast bullion ingot in profile
+    visual: 'a poured ingot cooling in a mould, assay marks pressed into metal, refinery craft. Not
+      a hoard and not treasure: one worked object'
+  Silver:
+    name: Silver
+    colour: cool argent grey and pale blue
+    mark: a silver bar in profile
+    visual: rolled silver sheet and industrial contacts, solar cell traces, the metal at work rather
+      than at rest
+  Oil:
+    name: Crude Oil
+    colour: black, rust and burnt orange
+    mark: a pump jack silhouette
+    visual: a pump jack against a flat horizon, pipeline runs and storage tank rims, refinery geometry
+  NaturalGas:
+    name: Natural Gas
+    colour: pale blue flame and steel grey
+    mark: a burner ring
+    visual: an LNG tank dome, pipeline valve geometry, a blue burner ring seen from above
+  Copper:
+    name: Copper
+    colour: copper red-brown and verdigris
+    mark: a drawn copper coil
+    visual: drawn copper wire coiled on a spool, open-pit terraces stepping down, busbars and grid connectors
+  Wheat:
+    name: Wheat
+    colour: harvest gold and field brown
+    mark: a single wheat ear
+    visual: wheat ears in flat silhouette, combine rows ruled across a field, grain elevator profiles
+  Corn:
+    name: Corn
+    colour: corn yellow and husk green
+    mark: a single ear of corn
+    visual: an ear of corn in husk, planted rows in perspective, silo and dryer geometry
+aliases:
+  commodities:
+    XAU: Gold
+    XAUUSD: Gold
+    GLD: Gold
+    GC=F: Gold
+    GC: Gold
+    GC (Gold futures): Gold
+    SPOT GOLD: Gold
+    XAG: Silver
+    XAGUSD: Silver
+    SLV: Silver
+    SI=F: Silver
+    WTI: Oil
+    USOIL: Oil
+    USO: Oil
+    CL=F: Oil
+    BRENT: Oil
+    BZ=F: Oil
+    CRUDE: Oil
+    OIL: Oil
+    NG=F: NaturalGas
+    NATGAS: NaturalGas
+    UNG: NaturalGas
+    HG=F: Copper
+    COPPER: Copper
+    ZW=F: Wheat
+    WHEAT: Wheat
+    ZC=F: Corn
+    CORN: Corn
+  forex:
+    EURUSD: EUR
+    EUR/USD: EUR
+    USDJPY: JPY
+    USD/JPY: JPY
+    GBPUSD: GBP
+    GBP/USD: GBP
+    USDCHF: CHF
+    USD/CHF: CHF
+    USDCAD: CAD
+    USD/CAD: CAD
+    AUDUSD: AUD
+    AUD/USD: AUD
+    NZDUSD: NZD
+    NZD/USD: NZD
+    DXY: USD
+    USDX: USD
+  crypto:
+    XBT: BTC
+    BITCOIN: BTC
+    ETHEREUM: ETH
+    SOLANA: SOL
+    RIPPLE: XRP
+    DOGECOIN: DOGE
+  stocks:
+    APPLE: AAPL
+    AMAZON: AMZN
+    BOEING: BA
+    SALESFORCE: CRM
+    CISCO: CSCO
+    CHEVRON: CVX
+    DISNEY: DIS
+    CATERPILLAR: CAT
+    AMGEN: AMGN

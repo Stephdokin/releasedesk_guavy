@@ -1,0 +1,4 @@
+flask>=3.0
+PyYAML>=6.0
+# 1.x needs Python 3.10+; this machine is on 3.9
+anthropic>=0.125,<1.0

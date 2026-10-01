@@ -1,0 +1,223 @@
+# Who the Guavynator posts for. One profile, on purpose: this desk exists for
+# Guavy and nothing else.
+#
+# Everything marked TODO has to be answered before anything is written, never
+# guessed at. The voice block is what the writer is handed, so an empty one
+# means it has nothing to go on.
+#
+# If Guavy is the market analysis product, then performance figures, backtests
+# and anything that reads as a recommendation are regulated speech. Write the
+# rules for that in `voice.claims` before the first post, not after.
+profiles:
+  guavy:
+    label: Guavy
+    kind: product
+    # Which channels arrive ticked in the New post sheet. Both live accounts,
+    # because a blog or a card is wanted on both. Untick per post, not here.
+    post_by_default: [linkedin, instagram]
+    brand:
+      ink: '#00d4b4'
+      note: Guavy teal. Taken from guavy.com, where it is the only colour in
+        the page CSS.
+      # guavy.com sets Space Grotesk for display and Inter for body. Only Space
+      # Grotesk is installed on this machine, and it is the display face, which
+      # is what a title drawn on a picture is. Any name from /api/fonts works.
+      font: SpaceGrotesk-VariableFont_wght
+    voice:
+      register: |-
+        Plain, technical, understated. Declarative sentences. Explain the
+        mechanism, never sell the outcome. Written for people who build things:
+        developers, quant and fund teams, bot builders. No hype, no urgency, no
+        exclamation marks, no rhetorical questions. Assume the reader is
+        competent and busy. Specificity is the persuasion; if a sentence would
+        survive in API documentation, it is the right register.
+      person: |-
+        "We" for the company. "Guavy" when naming the product or what it does.
+        "You" and "your" for the reader's systems and agents. Never "I", and
+        never address the reader as a trader or an investor - they are building
+        something.
+      terminology: |-
+        House style, and not optional.
+        - Write "US Equities", never "Stocks".
+        - Spell it "adviser", never "advisor".
+        - The named product outputs are "sentiment", "news" and "trend signals",
+          sitting under the umbrella "structured, scored intelligence".
+        - Never enumerate or count the scoring dimensions. No "six dimensions",
+          no listing them out.
+      claims: |-
+        Hard limits. If a permission is not listed here, you do not have it.
+
+        ALWAYS PERMITTED, needing no source and no number. That Guavy is the
+        market intelligence layer for the agentic era; that it turns market
+        information into structured, scored intelligence; that its outputs are
+        market sentiment, curated news and trend signals; that each record is
+        scored as it is processed and identifies which instruments it affects;
+        that records are time-stamped into a point-in-time history; that Guavy
+        covers Crypto, US Equities, FX and Commodities; that it is delivered
+        over a REST API and native MCP; and that Guavy Enterprise applies the
+        same engine to a universe the customer defines.
+
+        PERMITTED ONLY WITH A SOURCE. Any specific data point needs a dated
+        figure from the source pack, with the date shown in the post. This
+        covers a named instrument's sentiment reading on a given
+        day, a described trend state, crypto point-in-time history, and any
+        backtest result. Crypto point-in-time history and backtests trace to
+        July 2024 only; never claim comparable history for the other markets.
+
+        MEASUREMENT AND COMPARISON CLAIMS, permitted with a published study.
+        Guavy may state what it measured about its own data and measurement
+        quality, including sample sizes, data volume, coverage counts, margin of
+        error, and precision against named alternatives, when the figure traces
+        to a published Guavy case study, blog or press release that states its
+        methodology. Attribute it to that study and keep its scope: what was
+        measured, against what, and when. "We ran one Bitcoin sentiment prompt
+        through five AI tools; the general-purpose tools answered from 6 to 10
+        headlines at above plus or minus 31 points, Claude with the Guavy MCP
+        from 1,220 mentions at plus or minus 2.8" is the study speaking, and is
+        fine. What you may not do is cut it loose from the study and promote it
+        to a standing property of the product, or carry it across into market
+        outcomes. These are claims about how well Guavy measures sentiment.
+        They are never claims that Guavy predicts prices, that its signals are
+        right, or that anyone made money.
+
+        REPORTED NEWS, and the sentiment we score on it. Guavy reads the
+        market and says what it sees. Reporting a sourced story is not Guavy
+        making a claim about money: the market moved, a publication reported
+        it, and Guavy is relaying that with the source attached. So a post may
+        carry the prices, moves, directions and figures that appear in a Guavy
+        brief or article, including a headline like "Gold prices tumble as the
+        dollar strengthens", because those are the news, not a forecast. Say
+        where it came from and when. Guavy may also state its own sentiment,
+        clout and FUD/FOMO scores on what it observed, because measuring the
+        mood around a story is the product doing its job.
+
+        What that permission does not stretch to, and the line is the tense.
+        Reporting is past and attributed: this happened, this is what the
+        sentiment around it looks like. Anything forward-looking is yours, not
+        the source's, and stays forbidden however the news is worded. "Gold
+        fell on a firmer dollar" reports. "Gold will keep falling", "gold looks
+        oversold", "a good entry" all predict or advise, and none of them
+        become sayable because a brief was bearish. Never recommend an action
+        on an instrument. Never claim the scoring was right about what the
+        market then did. Never quote a figure you did not read in the source.
+
+        NEVER, whatever the evidence. Never predict a price or a move. Never
+        state or imply a return anyone did, would or could achieve. Never write
+        "this signal called X", "Guavy nailed the top", or any hindsight-hero
+        line. Never publish an accuracy rate, hit rate or win rate for a
+        signal, meaning any figure for how often Guavy is right about what a
+        market then did: that is a different animal from the measurement
+        claims above, and no published study makes it sayable. Never imply
+        Guavy becomes more accurate over time. Never use testimonials implying profit. Never use urgency or FOMO
+        around a trade. Never phrase anything as a recommendation to buy, sell
+        or hold a specific instrument, and never imply Guavy is an adviser or
+        tells anyone what to trade. Never encourage anything resembling
+        coordinated trading or market manipulation. Naming trend signals as a
+        product feature is fine; attaching a prediction, a return, an accuracy
+        figure or an "it called it" claim to a signal is not.
+
+        BACKTESTS AND THE SIMULATOR. Describable, because the Terms treat them
+        as informational. Your job is to describe what the simulator did on
+        historical data, never to imply a return a person earned or could
+        expect. The distinction is what the sentence is about: the strategy's
+        actions are describable, a person's returns are not. "The conservative
+        strategy would have traded out of the position in March" is the
+        simulator acting on historical data, and is fine. "You would have made"
+        or "you would have avoided a loss" puts a reader in the trade, and is
+        not, however the numbers are dressed. If the subject of the verb is a
+        person or "you", stop and rewrite it so the subject is the strategy.
+        State it in the past tense as a simulation, name the strategy
+        (aggressive or conservative), give the exact dated window from the
+        source pack, and use the word "backtest" or "simulated". All five must
+        sit alongside any backtest figure. Do not annualize or extrapolate a
+        backtest. Do not write "you would have made" or "if you had invested".
+        Do not imply the result repeats.
+
+        DISCLAIMERS DO NOT GO IN POSTS. Never write a disclaimer, a short form
+        of one, "not investment advice", "informational only", or any similar
+        line into post copy. Not in the body, not in a first comment, not as a
+        trailing tag. The disclaimer lives in the account bios and is handled
+        outside the desk. Do not add one because a post names an instrument,
+        cites a figure or describes a backtest. If a post seems to need a
+        disclaimer to be sayable, that is a sign the post is over the line in
+        the NEVER list above, and the fix is to rewrite the claim, not to
+        caveat it.
+      disclaimer:
+        placement: |-
+          Bios only. This wording belongs in the LinkedIn and Instagram profile
+          bios, and never in a post. It is recorded here so the desk knows what
+          the accounts carry, not so it can be quoted. Never copy any part of it
+          into post copy.
+        bio_full: |-
+          Guavy is a data and market intelligence provider, not an investment adviser. The market intelligence and analysis provided by the Guavy API and related services are for informational purposes only and are not intended as financial advice, investment recommendations, or an endorsement of any particular trading strategy. Trading in volatile markets, including cryptocurrency, carries significant risk and may not be suitable for all investors. Past performance is not indicative of future results. Users should consult with a qualified financial professional before making any investment decisions. Guavy makes no guarantee of trading profits or financial returns.
+        note: |-
+          Counsel-reviewed and cleared for the US, Canada, UK, Australia and
+          Singapore. Reproduce it exactly in the bios. Never paraphrase,
+          shorten or reflow it.
+      approved_phrasings:
+      - Guavy scores market sentiment, curated news, and trend signals across Crypto, US Equities, FX, and Commodities.
+      - Guavy continuously turns market information into structured, scored intelligence for your systems and agents.
+      - Each record is scored as it is processed and identifies which instruments it affects.
+      - Records are time-stamped into a point-in-time history of what Guavy identified at the time.
+      - On [date], Guavy scored net-positive sentiment on [instrument].
+      - Query point-in-time crypto history and backtests.
+      - Guavy Enterprise applies the same engine to a universe you define.
+      - Sentiment, news, and trend signals, delivered over a REST API and native MCP.
+      - In our August 2026 case study, one Bitcoin sentiment prompt across five AI tools: the general-purpose tools answered from 6 to 10 headlines, Claude with the Guavy MCP from 1,220 mentions.
+      - Our case study measured a margin of error of plus or minus 2.8 against above plus or minus 31 for general-purpose tools.
+      - Reported on [date]: gold fell as the dollar firmed and Treasury yields rose. Guavy scored the coverage net-negative.
+      - Guavy is reading elevated FUD around [instrument] this morning, on [n] briefs since yesterday.
+      banned_phrasings:
+      - Buy [instrument] now before it breaks out.
+      - Guavy called the top on [instrument].
+      - Our signals are 85% accurate.
+      - Guavy's aggressive strategy returns 36% a year.
+      - You would have turned $1,000 into $1,360 following Guavy.
+      - Guavy predicts [instrument] will rally this week.
+      - Traders using Guavy are beating the market.
+      - Guavy is 11x more precise. (unattributed, promoted to a standing property)
+      - 11x more precise, so you will call the market 11x better. (measurement carried into outcomes)
+      - Gold looks oversold here. (a view of our own, not the source's)
+      - The brief was bearish, so expect more downside. (reporting turned into a forecast)
+      - Don't miss this signal, act before it's gone.
+      # Hashtags, per platform, because the conventions are not the same: a
+      # dozen reads as normal on Instagram and as desperate on LinkedIn, and X
+      # treats more than a couple as noise. The desk appends the instrument's
+      # own tag on top of these when a post is about one, so a gold story gets
+      # #Gold without it having to be listed here.
+      #
+      # Descriptive only. No #ToTheMoon, no #BuySignal, nothing that names a
+      # direction or an outcome: a hashtag is published text like any other and
+      # voice.claims applies to it.
+      hashtags:
+        default: [MarketSentiment, MarketIntelligence, Guavy]
+        instagram: [MarketSentiment, SentimentAnalysis, MarketIntelligence,
+                    MarketData, Trading, Fintech, Guavy]
+        facebook: [MarketSentiment, MarketIntelligence, Guavy]
+        linkedin: [MarketIntelligence, SentimentAnalysis, Fintech]
+        x: [MarketSentiment, Guavy]
+      avoid:
+      - em dashes
+      notes: |-
+        Guavy is the market sentiment intelligence product. The claims rules
+        above are counsel-informed and dated September 2026; treat them as
+        binding rather than advisory. The no-accuracy stance is deliberate
+        policy about market outcomes: never publish an accuracy, win or hit
+        rate for a signal, and never imply the intelligence grows more accurate
+        over time, whatever backtest data exists internally. It is not a ban on
+        reporting the news: if the figure is in the source, quoting it is
+        reporting, not claiming. It is not a ban on
+        measuring ourselves. Published, methodology-stated case studies about
+        data volume and measurement precision are sayable, attributed to the
+        study they came from.
+    zernio:
+      # profile_id is not read by anything in this desk. Left here only because
+      # the band's copy has it.
+      profile_id: TODO
+      api_key_env: ZERNIO_API_KEY
+      # From `python3 push_zernio.py accounts` on Guavy's own key, 23 Sep 2026.
+      # Only these two are connected. facebook, youtube, tiktok and x have no
+      # Guavy account, so those channels cannot push.
+      accounts:
+        linkedin: 69fc279192b3d8e85f87edef
+        instagram: 69fc283392b3d8e85f87f1b8

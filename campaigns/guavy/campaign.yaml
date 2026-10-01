@@ -1,0 +1,8 @@
+# The thing being promoted. One directory per campaign.
+slug: guavy
+title: TODO
+release_date: TODO        # the day the world is told, YYYY-MM-DD
+priority: 1
+assets:
+  have: []
+  need: []                # what is missing, so the allocator does not promise it

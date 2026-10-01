@@ -1,0 +1,13 @@
+.env
+desk.db
+schedule.json
+media/
+.venv/
+__pycache__/
+.DS_Store
+
+# Claude Code's per-machine permission list, not part of the project.
+.claude/settings.local.json
+
+# Backups and scratch
+*.bak

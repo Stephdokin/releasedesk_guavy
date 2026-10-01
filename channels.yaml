@@ -1,0 +1,235 @@
+# Guavynator pacing and constraints.
+#
+# One account per platform, so a channel key is just the platform name. The
+# band's desk needs `instagram` and `instagram_sk` to tell two accounts apart;
+# here there is only one of each and the suffixes would be noise.
+#
+# per_week is a ceiling, not a target, and the allocator can only place as many
+# posts as there are days in `days`. Raising one without the other does nothing.
+#
+# Everything here is inherited from the band's desk and is a guess for Guavy.
+# A product does not post like a band. Set these deliberately.
+timezone: America/Edmonton
+# `prefer_shape` is which crop this channel is sent when a post carries more
+# than one. Instagram wants the vertical one, LinkedIn the wide one, and
+# sending both put two copies of the same story in one post. It is a
+# preference, not a filter: a post whose only picture is a vertical short goes
+# out vertical on LinkedIn too, because the alternative is no picture.
+channels:
+  linkedin:
+    prefer_shape: landscape
+    label: LinkedIn
+    per_week: 3
+    accepts:
+    - video_16x9
+    - video_9x16
+    - image
+    - text
+    days:
+    - Mon
+    - Tue
+    - Thu
+    time: 08:00
+    strict_duplicates: true
+    links_in_first_comment: true
+    notes: 'TODO: confirm this account exists and is connected.'
+  instagram:
+    prefer_shape: portrait
+    label: Instagram
+    per_week: 4
+    accepts:
+    - video_9x16
+    - image
+    days:
+    - Mon
+    - Wed
+    - Fri
+    - Sat
+    time: '11:00'
+    mirrors: facebook
+    notes: 'TODO: confirm this account exists and is connected.'
+  facebook:
+    prefer_shape: landscape
+    label: Facebook
+    per_week: 4
+    accepts:
+    - video_9x16
+    - video_16x9
+    - image
+    days:
+    - Mon
+    - Wed
+    - Fri
+    - Sat
+    time: '11:00'
+    notes: 'TODO: confirm this account exists and is connected.'
+  youtube:
+    prefer_shape: landscape
+    label: YouTube
+    per_week: 3
+    accepts:
+    - video_16x9
+    - video_9x16
+    days:
+    - Tue
+    - Fri
+    - Sun
+    time: '10:00'
+    notes: 'TODO: confirm this account exists and is connected.'
+  tiktok:
+    prefer_shape: portrait
+    label: TikTok
+    per_week: 5
+    accepts:
+    - video_9x16
+    days:
+    - Mon
+    - Tue
+    - Wed
+    - Thu
+    - Sat
+    time: '18:00'
+    notes: 'TODO: confirm this account exists and is connected.'
+  x:
+    prefer_shape: landscape
+    label: X
+    zernio_platform: twitter
+    per_week: 7
+    accepts:
+    - video_9x16
+    - video_16x9
+    - image
+    - text
+    days:
+    - Mon
+    - Tue
+    - Wed
+    - Thu
+    - Fri
+    - Sat
+    - Sun
+    time: 09:00
+    max_chars: 280
+    notes: 'TODO: confirm this account exists and is connected.'
+platforms:
+  linkedin:
+    label: LinkedIn
+    ink: '#4C9AC4'
+    collab: false
+    tag: true
+    max_chars: 3000
+  x:
+    label: X
+    ink: '#BFC4BA'
+    collab: false
+    tag: true
+    aliases:
+    - twitter
+    max_chars: 280
+  instagram:
+    label: Instagram
+    ink: '#D2708F'
+    collab: true
+    tag: true
+    max_chars: 2200
+  facebook:
+    label: Facebook
+    ink: '#8A7FD1'
+    collab: false
+    tag: true
+    max_chars: 63206
+  youtube:
+    label: YouTube
+    ink: '#CB5540'
+    collab: false
+    tag: true
+    max_chars: 5000
+  tiktok:
+    label: TikTok
+    ink: '#4FC2A8'
+    collab: false
+    tag: true
+    max_chars: 2200
+# ---------------------------------------------------------------- Markets
+#
+# The Markets tab posts the most important thing Guavy has seen since that
+# channel last heard from it. Its pacing is separate from `per_week` above,
+# which is campaign capacity: a campaign post is planned weeks out, a markets
+# post is a reaction to news, and the two compete for the same attention but
+# not for the same slots.
+#
+# These are per market, not a pool. Every market gets the same allowance on a
+# channel, because there is no reason to promote crypto over commodities, and
+# each keeps its own timer. So `per_day: 1` on linkedin means one crypto post,
+# one equities post, one FX post and one commodities post: four a day on that
+# account, which is what the All tab totals up.
+#
+# `min_hours` is the floor between two posts from the same market on that
+# channel. `per_day` is that market's ceiling for a busy news day. `min_clout`
+# is how interesting a brief has to be to be worth posting at all: the Guavy
+# API scores every brief 0-100, and most of them are not news.
+markets:
+  quiet_hours: [23, 7]        # local, inclusive start, exclusive end
+
+  # What makes a story worth posting. Clout on its own does not sort: over a
+  # full sweep of all four markets it ran 20 to 100 with a median of 82, so
+  # almost everything is loud. Sentiment separates. It runs about -4 to +4 and
+  # the sign does not matter: a strongly negative story moves the needle as
+  # much as a strongly positive one, and neutral is what to skip.
+  #
+  # A floor of 2 barely filters, keeping 151 of 159 briefs on that sweep. A
+  # floor of 3 keeps 76, which is the half worth looking at.
+  # How far back to look for a candidate. Not "since we last posted": a story
+  # is skipped because it has already gone out, which the desk knows from the
+  # article id on the post, so there is no reason to ignore everything that
+  # arrived before the last one.
+  window_hours: 24
+  min_sentiment: 3.0
+  rank:
+    sentiment: 0.6            # weight on distance from neutral
+    clout: 0.4                # weight on how loud it is
+  channels:
+    linkedin:
+      min_hours: 10           # once a day at most. More is suppressed there.
+      per_day: 2
+      min_clout: 60
+    instagram:
+      min_hours: 9
+      per_day: 2
+      min_clout: 60
+    x:
+      min_hours: 0.85         # about 50 minutes, matching what was run before
+      per_day: 12
+      min_clout: 35
+    facebook:
+      min_hours: 7
+      per_day: 3
+      min_clout: 55
+    # youtube and tiktok are not news-shaped and are deliberately absent. A
+    # channel with no entry here never posts from Markets.
+
+full_load: 5
+phases:
+  tease:
+    from: -1
+    to: -1
+    weight: 1
+  launch:
+    from: 0
+    to: 0
+    weight: 5
+  peak:
+    from: 1
+    to: 3
+    weight: 3
+  taper:
+    from: 4
+    to: 9
+    weight: 1
+blackouts:
+- 2026-09-07
+- 2026-12-24
+- 2026-12-25
+- 2026-12-26
+- 2026-12-31
+- 2027-01-01
