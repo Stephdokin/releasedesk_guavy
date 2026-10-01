@@ -4,7 +4,7 @@ Scheduling and approval for Guavy. Lifted from the Memphis and The Grande
 release desk, which is the older copy and still the one to compare against when
 something here looks wrong.
 
-Upload first, not allocate first. Drop media on the Media tab, describe it,
+Drop media on the Media tab, describe it,
 select what you want, press Create post. You write the copy, approve it here,
 and only then does anything reach Zernio.
 
@@ -17,7 +17,8 @@ python3 app.py
 
 Then open http://127.0.0.1:5001
 
-Port 5001 rather than 5000, so this and the band's desk can run side by side.
+Port 5001 rather than 5000, so this and the Memphis and The Grande desk can
+run side by side.
 
 Put the Zernio key in `.env` before pushing anything:
 
@@ -28,95 +29,55 @@ python3 push_zernio.py push --dry-run
 
 ## What is not done yet
 
-This is the band's desk with the band taken out. The machinery works; the
-configuration is a guess.
+The machinery works and the configuration is mostly in.
 
-- `profiles.yaml` has one profile, Guavy, and its voice block is all TODO. The
-  writer is handed that block and the source pack and nothing else, so until it
-  is filled in there is nothing for it to write from.
-- `campaigns/guavy/source-pack.md` is a stub. Copy may not claim anything that
-  is not written there, which is the whole point of it.
-- Zernio account ids are TODO. Nothing pushes until they are real.
-- `channels.yaml` pacing is inherited from a band. A product does not post like
-  a band. Set it deliberately.
+- `profiles.yaml` carries Guavy's voice and a binding `voice.claims` block,
+  dated September 2026. The writer is handed that block, the `## Voice`
+  section of `.claude/skills/guavy-post/SKILL.md`, and the source pack, and
+  nothing else. It no longer falls back to the band's `social-schedule` skill.
+- `campaigns/guavy/source-pack.md` still has one open question: who, if anyone,
+  is credited on posts.
+- Zernio ids are in for LinkedIn and Instagram. Facebook, YouTube, TikTok and X
+  are not connected, deliberately: they come last, once the post flow is proven.
+- `campaign.yaml` has no `release` date, so the campaign reads as always-on.
+- `channels.yaml` posting days and times are inherited, not chosen. Set them
+  deliberately.
 
-**If Guavy is the market analysis product**, performance figures, backtests and
-anything that reads as a recommendation are regulated speech. Work out what may
-be said and write it into `voice.claims` before the first post.
-
-## Differences from the band's desk
-
-- One profile, so no borrowed accounts, no signoff gate, and no question of
-  whose numbers a post belongs to.
-- One account per platform, so a channel key is just the platform name. The
-  band needs `instagram` and `instagram_sk` to tell two accounts apart; here
-  there is only one of each.
-- No hand-off by email, no campaign allocator history, no angles ledger yet.
-
-## How it fits together
-
-```
-campaign.yaml + channels.yaml
-        |
-   allocate.py            proposes empty slots
-        |
-   schedule.json
-        |
-   app.py  /api/sync      merges into desk.db, never touches approved work
-        |
-   Claude writes copy     from source-pack.md, into the slots
-        |
-   you approve            in the browser, one post at a time
-        |
-   push_zernio.py         not built yet
-```
-
-## Two things that are guarded
-
-Re-running the allocator adds new slots and leaves anything already drafted,
-approved, or scheduled completely alone. Safe to run any time.
-
-Posts on Ross's profile cannot be approved until his signoff is ticked.
-
-Ross's LinkedIn is not connected to Zernio and will not be. That channel is
-marked `delivery: email` in `channels.yaml`: it is planned and approved here
-like any other, then emailed to him to post by hand. Nothing about it is ever
-scheduled, so the desk never claims it will go out on its own.
+## What is guarded
 
 A file in the library cannot be deleted while it is attached to a post that has
 moved past drafting. Detach it there first.
 
+Nothing reaches Zernio until it is approved. You approve posts by hand; the
+one exception is the Wire autoposter, which approves its own posts while Auto
+is switched on. `publishNow` is never set, so everything goes to Zernio as a
+scheduled post, though a post timed "soon" fires two minutes later.
+
 ## Tuning
 
-`channels.yaml` is the whole control panel.
+`channels.yaml` is the control panel.
 
-- `per_week` per channel is a ceiling, not a target, and the allocator can
-  only place as many posts as there are days in `days`: raising one without
-  the other changes nothing
-- `full_load: 5` means one campaign at launch saturates every channel; a single
-  campaign tapering runs them at a fifth
-- `phases` sets how hard each campaign pushes relative to its release week
+- `days` and `time` per channel are when the desk places a post when you leave
+  the timing on Auto
 - `blackouts` are dates nothing schedules on
-
-Change these and re-run rather than editing the output by hand.
+- `phases` labels a post by how far it sits from the campaign's `release`
+  week. Guavy has no release date, so every post reads as taper
 
 ## Where things stand
 
-The desk posts for two profiles: Guavy, and Stephen Kinger
-King. Eleven Zernio accounts, one workspace. The band can post to all eleven;
-Kinger's profile reaches his six.
+The desk posts for one profile, Guavy, on two connected Zernio accounts:
+LinkedIn and Instagram.
 
 Seven tabs: **Suggested, Media, Posts, Calendar, Queued, Published, Numbers.**
 
-The flow is media first, not allocate first. Drop photos, video or music
+The flow is media first. Drop photos, video or music
 anywhere on the Media tab, press Upload files, or paste a URL. One box takes
 both kinds: a page gives up its feature image and opening paragraph, a link
 straight to a picture just fetches the picture. They are never the same URL, so
 there is nothing to choose between, and the button only says which it has got. Describe each file, select what you want, press Create post. The
 dialog carries the copy, the people to tag or collaborate with, music, the
 accounts, the timing and the hashtags. Publish writes it to the schedule and
-sends it. `allocate.py` still exists for campaign pacing; this flow does not
-use it.
+sends it. The desk makes the slot itself, on the channel's next posting day.
 
 **A photo can appear more than once.** Right-click a shot in the compose strip,
 or press the copy button, and it lands again next to itself ready to be moved
@@ -143,8 +104,9 @@ pack behind it; a folder is just where you put things so you can find them.
 
 ### Things that are easy to get wrong
 
-- **A channel key names an account, not a platform.** `instagram` is Guavy's,
-  `instagram_sk` is Kinger's. Thirteen channels, six platforms.
+- **A channel key names an account, not a platform.** Here there is one
+  account per platform, so the key is the platform name, but code that assumes
+  so will break the day a second account arrives.
 - **Every video on screen carries the desk's own controls**, not the browser's:
   play, back to the start, and a line to drag. `vplayer()` draws them and the
   handlers walk up from whatever was clicked, so a repaint cannot leave a stale
@@ -189,21 +151,8 @@ pack behind it; a folder is just where you put things so you can find them.
   the ellipsis. Type one in the post sheet and that wins.
 - **`platformSpecificData` is not validated.** Zernio stores any key you send,
   including misspelled ones. A field only works if you have watched it work.
-- **Borrowed accounts.** The band posts to Kinger's accounts; `borrowed` in
-  `profiles.yaml` keeps his followers and his numbers credited to him.
-- **A profile's calendar is what lands on it, not what it wrote.** A band post
-  to Kinger's Instagram is stored as Guavy's, but it takes up a slot on
-  Kinger's calendar and he is the one who would spot a clash, so `/api/posts`
-  filters on `lands_on()` rather than a column comparison. Those posts are
-  drawn with a dashed edge and an arrow, and say who wrote them. Whose numbers
-  they are stays a separate question, answered in Numbers.
-- **The same account wears two channel keys.** The band calls Kinger's
-  Instagram `instagram_sk`; Kinger calls it `instagram`. Only the Zernio
-  account id names it the same way from both sides, which is what
-  `channel_account()` resolves before asking who owns it.
 - **Attribution is by origin.** A post belongs to the profile that composed it
-  where the desk knows, and to the account owner otherwise. That is why a band
-  collab on Kinger's Instagram counts for Guavy and his own posts never do.
+  where the desk knows, and to the account owner otherwise.
 - **A slideshow goes out instead of the photos in it.** The post carries the
   rendered video, so the photos it was made from are named nowhere on it and
   the Media tab called them unused while they were out being watched. The
@@ -212,7 +161,7 @@ pack behind it; a folder is just where you put things so you can find them.
   uploads every id in there, so the source photos would be posted alongside
   the video.
 - **Media is per profile, copied not referenced.** `media/` holds the desk's own
-  copy. Uniqueness is `(profile, sha256)`, so the same song can live on both.
+  copy. Uniqueness is `(profile, sha256)`, so the same file can live on two profiles.
 - **Phone video hides its orientation** in the track matrix; `probe.py` swaps
   the dimensions on a quarter turn.
 - **The box and the renderer have to agree about length.** `index()` serves
@@ -373,10 +322,10 @@ Lines arrive one at a time. **Arrive** sets how: pop in, quick fade or slow
 fade. The note under the box counts the lines it will really draw, wrapping
 included, and says whether the length you picked leaves time to read them.
 
-**Naming the track.** A radio in the Music section puts the song in the top
+**Naming the track.** A radio in the Music section puts the track name in the top
 left corner in small text, either `♪ Title` or `Music: Title`. The title starts
 from the filename with its tail of mixes, tempos and keys taken off, so
-`0_One More Time_Reference Mix_116_Fmaj.wav` becomes `One More Time`. Correct it
+`0_Opening Bell_Reference Mix_116_Fmaj.wav` becomes `Opening Bell`. Correct it
 once and it is saved on the track, so the next post starts right. It sits under
 the platform's header like the caption, and works with or without one.
 
@@ -450,23 +399,16 @@ refused for that channel with a reason, and the other channels still go.
 
 ## Known gaps
 
-- `linkedin_matg` has no account: Guavy has no LinkedIn page. Its slots skip.
 - LinkedIn native posts can never sync. Zernio cannot discover posts it did not
   create there, so anything posted to LinkedIn by hand is invisible to the desk.
   Posting from here is the only way LinkedIn work gets measured.
 - Facebook collaborators are unproven. Instagram collabs are known to work.
-- Personal Facebook profiles cannot be posted to by any API. Both Facebook
-  connections are Pages.
-- Most `handles` lists in `profiles.yaml` are still empty, so tagging offers
+- Personal Facebook profiles cannot be posted to by any API. When Facebook is
+  connected it has to be a Page.
+- The `handles` list in `profiles.yaml` is empty, so tagging offers
   nobody on those platforms. Handles added from the compose box go to the
   `handles` table instead, and are merged on read.
-- Stephdokin Corp, Guavy and Sparkled Skies are profiles with no voice and no
-  accounts. Do not write for them until their blocks are filled in.
-- Ross's LinkedIn is `delivery: email` and needs `handoff_to` plus SMTP settings
-  before the desk can send it.
 - Every press of Preview writes a new file and a new row in the library, so
   iterating on one post leaves a trail of rendered videos behind. Two renders
   that come out byte for byte identical are one row by `(profile, sha256)` but
   still two files, so the second is orphaned on disk. Nothing clears either up.
-- The Ray's source pack still has open TODOs, including whether there is a real
-  Ray's and the Facebook page name for Iggy's Film Galaxy.

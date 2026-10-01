@@ -19,8 +19,10 @@ import yaml
 
 ROOT = Path(__file__).parent
 MODEL = "claude-opus-5"
-SKILL = Path.home() / ".claude" / "skills" / "social-schedule" / "SKILL.md"
-LOCAL_SKILL = ROOT / ".claude" / "skills" / "social-schedule" / "SKILL.md"
+# Guavy's own skill, and only that. There is deliberately no fallback to the
+# user-level social-schedule skill: that one is the band's, and its voice
+# section would sit beside Guavy's claims rules and contradict them.
+SKILL = ROOT / ".claude" / "skills" / "guavy-post" / "SKILL.md"
 
 
 def _read(p, default=""):
@@ -31,8 +33,8 @@ def _read(p, default=""):
 
 
 def voice_rules():
-    """The Voice section of SKILL.md, which is where the sign-off rules live."""
-    text = _read(LOCAL_SKILL) or _read(SKILL)
+    """The Voice section of Guavy's SKILL.md."""
+    text = _read(SKILL)
     m = re.search(r"^## Voice\b.*?(?=^## )", text, re.S | re.M)
     return m.group(0).strip() if m else text
 
@@ -84,8 +86,8 @@ paragraph is enough to write from.
 Reply with JSON only, no prose around it, in this shape:
 
 {
-  "copy": "the post text, with the sign-off on its own last line if one applies",
-  "first_comment": "the listen link, or empty string",
+  "copy": "the post text",
+  "first_comment": "the link, or empty string",
   "hashtags": ["marketsentiment"],
   "tags": ["@handle"],
   "collaborators": ["@handle"],
@@ -105,7 +107,7 @@ def brief(post, media, profile, channels, campaign_dir, page=None):
     v = profile.get("voice") or {}
     handles = (profile.get("handles") or {}).get(plat) or []
 
-    link_policy = ("the listen link goes in first_comment, never in the body"
+    link_policy = ("the link goes in first_comment, never in the body"
                    if ch.get("links_in_first_comment")
                    else "a link may go in the body")
     hashtag_policy = ("yes, close the post with them"
@@ -125,15 +127,13 @@ def brief(post, media, profile, channels, campaign_dir, page=None):
     if ch.get("strict_duplicates"):
         lines.append("This account rejects copy close to anything already posted "
                      "on it. The angle must be its own.")
-    if post.get("needs_signoff"):
-        lines.append("This is a personal profile and needs that person's sign-off.")
     if ch.get("angle"):
         lines.append(f"Angle for this channel: {ch['angle']}")
 
     lines += ["", "## The asset", ""]
     if media:
         lines += [f"File: {media['original']} ({media['kind']})",
-                  f"What it is, in the band's own words: {media.get('note') or '(no description given)'}"]
+                  f"What it is, as described on the desk: {media.get('note') or '(no description given)'}"]
     else:
         lines.append(f"No file attached. The slot expects: {post.get('asset_label') or 'unknown'}")
 
@@ -234,8 +234,7 @@ Every fact must already be in the copy you were given. You may leave things
 out. You may not add a fact, a name, a number or a claim that is not there.
 
 Keep the voice you are given. Write them as a sequence: the first one lands the
-news, the ones after it add to it, the last one is where thanks or a sign-off
-belongs if the copy has any.
+news, the ones after it add to it, the last one closes it.
 
 Return JSON and nothing else:
 {"cards": [{"text": "line one\nline two"}, ...], "why": "one line on the shape"}
@@ -324,20 +323,23 @@ if __name__ == "__main__":
                            ROOT / "campaigns" / p["campaign"]), indent=2))
 
 
-SUGGEST_SYSTEM = """You suggest things a working band could post. Not copy: ideas.
+SUGGEST_SYSTEM = """You suggest things Guavy could post. Not copy: ideas.
 
-You are given their source packs, the angles they have already spent, and their
-voice. Every idea must be something they could actually shoot or post with what
-they have, or a small ask you name plainly ("needs a photo of the setlist").
+Guavy is a market sentiment intelligence product for people who build things:
+developers, quant and fund teams, bot builders. You are given its source pack,
+the angles already spent, and its voice block, whose claims rules are binding.
+An idea that only works by breaking them is not an idea: no predictions, no
+returns, no accuracy rates, nothing that reads as a recommendation.
 
-Hang ideas on real occasions where one fits: the release date, the album date, a
-day of the week that suits the content, a season, an anniversary of an earlier
-release. Do not invent awards, chart positions, or press. Do not invent
-anniversaries you cannot derive from the dates you were given.
+Every idea must be something Guavy could actually post with what it has, or a
+small ask you name plainly ("needs a screenshot of an MCP query"). Hang ideas
+on real occasions where one fits: a day of the week that suits the content, a
+date in the source pack. Do not invent customers, partners, press, figures or
+anniversaries you cannot derive from what you were given.
 
-Vary them. Some should be quick and cheap, some should be a proper piece. Some
-should be about the songs and some about the people. Avoid repeating an angle
-already listed as spent.
+Vary them. Some should be quick and cheap, some a proper piece. Some about what
+the product does and how, some about reading the market as reported news, some
+about a published study. Avoid repeating an angle already listed as spent.
 
 Reply with JSON only: an array of exactly 10 objects, each:
 
@@ -406,6 +408,10 @@ Reject, however high it scored:
 - anything whose only substance is that a price moved
 - a near-duplicate of another story on the list. Several outlets cover one
   event; pick the fullest telling and say the others were the same story.
+- anything covering the same event, company or announcement as a headline
+  under "Already posted". A different outlet, a different angle or a later
+  update of something already posted is still the same story. Reject it
+  even if it is the strongest thing on the list.
 
 Prefer specific and consequential over loud. A modest story with a real number
 in it beats a dramatic one without.
@@ -417,15 +423,22 @@ Reply with JSON only:
   "why": "one sentence on what makes it material",
   "duplicates": ["ids covering the same event, if any"],
   "rejected": [{"article_id": "...", "why": "one short phrase"}],
-  "none": false
+  "none": false,
+  "best_available": "the id you would pick if you had to, or empty"
 }
 
 Set "none": true and leave article_id empty if nothing on the list is a real
 market story. An empty slot costs nothing; a post about a concert presale
-costs the account's credibility."""
+costs the account's credibility.
+
+Even when you set "none", name the least bad candidate in "best_available":
+the one closest to a real market story, never one that is plainly
+entertainment, sport or a sponsor mention, and never one covering something
+already posted. A person asking by hand may want
+one anyway. Leave it empty only if every candidate is that kind of story."""
 
 
-def pick(briefs, market, profile=None):
+def pick(briefs, market, profile=None, posted=None):
     """Choose the one story worth posting, out of a shortlist.
 
     The shortlist is already the strongest by score. What is left is whether
@@ -450,6 +463,8 @@ def pick(briefs, market, profile=None):
         f"## The market\n\n{market}",
         "## What the voice rules will not let us say", "",
         (v.get("claims") or "(none written)")[:1500],
+        "## Already posted in the last 48 hours", "",
+        "\n".join(f"- {t}" for t in (posted or [])) or "(nothing yet)",
         "## The shortlist", "", "\n\n".join(lines),
     ])
     kw = dict(model=MODEL, max_tokens=4000, system=PICK_SYSTEM,

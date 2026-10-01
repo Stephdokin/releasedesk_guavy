@@ -4,7 +4,7 @@ Turns a set of photos and a piece of music into one video.
 
 Platform music libraries are not reachable from any API, so the only way to
 put a track under a post is to render it into the file before it goes out.
-That is what this does. The band's own music, their own photos, one MP4.
+That is what this does: photos, a track, one MP4.
 
   python3 slideshow.py out.mp4 a.jpg b.jpg --audio track.mp3
 
@@ -91,7 +91,9 @@ def default_font():
 SAFE_BOTTOM = {True: 0.245, False: 0.10}      # keyed by "is it portrait"
 # The top has its own furniture: the Reels header, TikTok's tabs, the status
 # bar. Less of it than the bottom, but enough to stay out of.
-SAFE_TOP = {True: 0.12, False: 0.06}
+# On a portrait, 0.15 also keeps the block inside the middle 4:5 that
+# Instagram's feed shows of a 9:16 picture: (1 - 9/16 * 5/4) / 2 is 0.148.
+SAFE_TOP = {True: 0.15, False: 0.06}
 # Where the block sits inside what is left, 0 being as high as it may go and 1
 # as low. Every one of these is clamped into the safe band, so "top" is below
 # the platform's own header rather than against the edge of the frame.
@@ -415,9 +417,9 @@ def still(image, out, size=SIZE, caption=None, font=None, cap_size=None,
                 size=drawn if lines else None)
 
 
-# Words that end an audio filename without being part of the song's name. Only
-# stripped from the end, where they actually live: a band is perfectly entitled
-# to call a track "Demo" or "300".
+# Words that end an audio filename without being part of the track's name.
+# Only stripped from the end, where they actually live: a track may well be
+# called "Demo" or "300".
 TRACK_NOISE = {"final", "mix", "mixed", "master", "mastered", "remaster",
                "reference", "ref", "rough", "demo", "edit", "version", "ver",
                "bounce", "print", "wip", "draft", "clean", "explicit", "mp3",
@@ -429,11 +431,11 @@ CREDIT_SIZE = 0.022          # of the frame height
 
 
 def track_title(name):
-    """A song title out of whatever the file happens to be called.
+    """A track title out of whatever the file happens to be called.
 
     Only a starting point; the desk lets you correct it and remembers what you
-    typed. Trailing junk is stripped, not junk anywhere, so a song called
-    "Demo" survives while "Song Name Final Mix 116 Fmaj" does not keep its tail.
+    typed. Trailing junk is stripped, not junk anywhere, so a track called
+    "Demo" survives while "Track Name Final Mix 116 Fmaj" does not keep its tail.
     """
     t = Path(name or "").stem
     t = re.sub(r"^[0-9a-f]{8,16}-", "", t)          # the library's content hash

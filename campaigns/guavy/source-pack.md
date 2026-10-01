@@ -2,7 +2,7 @@
 
 Every factual claim in any post must trace to a line in this file. If it is not
 written here, the desk does not know it and will not write it. That is the whole
-point of the pack, and it matters more here than it did for the band.
+point of the pack, and for a market data product it is not optional.
 
 ## What Guavy is
 
@@ -45,14 +45,55 @@ promise of any result.
 
 ## Numbers
 
-TODO. Any figure that goes in a post belongs here first, with where it came
-from and the date it was true.
+Any figure that goes in a post belongs here first, with where it came from and
+the date it was true. Live market figures (a sentiment reading, a brief's
+price move) come from the brief or article the post is about, not from here.
 
-**If Guavy touches markets, read this before writing anything.** Performance
-figures, backtests, win rates and anything that reads as a recommendation are
-regulated speech in most places. Work out what may be said, and write the rules
-into `profiles.yaml` under `voice.claims`. Until that is done the honest answer
-to "can we post this" is no.
+### The general-purpose LLM case study
+
+Source: "Why Guavy vs. a General-Purpose LLM? 122x the Data, 11x the
+Precision", Guavy blog, published 26 August 2026,
+https://guavy.com/blog/why-guavy-vs-general-purpose-llm. Study run 11 August
+2026.
+
+What was measured: one Bitcoin morning-brief prompt, sent to five AI tools,
+and how much evidence each answered from. The prompt asked for latest
+sentiment counts, the current trade action for the aggressive and conservative
+simulator, the most impactful news brief of the last 24 hours, and the most
+recent trend strength and direction.
+
+| Tool | Answered from | Margin of error |
+|---|---|---|
+| Copilot | 6 headlines | ±40.0 pts |
+| ChatGPT | 10 headlines | ±31.0 pts |
+| Grok | 69 sources | ±11.8 pts |
+| Gemini | no answer given | n/a |
+| Claude + Guavy MCP | 1,220 mentions | ±2.8 pts |
+
+Methodology, as published: margins of error are 95% confidence intervals on a
+proportion at the worst-case split, 1.96 × √(0.25/n), in percentage points.
+"122x the data" is 1,220 against ChatGPT's 10; because error falls with the
+square root of the sample, 122 times the data is 11 times the precision.
+
+Keep its scope. This measures sample size and sampling error on one prompt on
+one day. It says nothing about whether any sentiment reading was right about
+the market. Grok's 69 sources and Gemini's non-answer are part of the result:
+do not describe the general-purpose tools as all answering from 6 to 10
+headlines.
+
+### Dated milestones, from Guavy's own announcements
+
+- 15 December 2024: Guavy introduced. (Guavy blog, "Introducing Guavy")
+- 10 December 2025: iOS app launched. (Guavy blog)
+- 8 January 2026: AI-native crypto API launched. (Guavy blog)
+- 21 April 2026: MCP integration launched. (Guavy blog)
+- 15 July 2026: Guavy 3.0 expands beyond crypto to Commodities and FX. (Guavy
+  blog)
+- 18 August 2026: expansion to US Equities. (Guavy blog)
+
+**Regulated speech.** The rules for what may be said about markets,
+performance and backtests are in `profiles.yaml` under `voice.claims`. They are
+binding, and they win over anything in this pack.
 
 ## People and credits
 
@@ -84,4 +125,7 @@ Recorded 23 September 2026, so a later reader can tell decision from inference.
 
 ## Links
 
-TODO.
+- Home: https://guavy.com
+- Blog: https://guavy.com/blog
+- Terms of Use: https://guavy.com/terms
+- The LLM case study: https://guavy.com/blog/why-guavy-vs-general-purpose-llm

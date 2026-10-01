@@ -68,55 +68,29 @@ def profiles():
 
 
 def account_owner():
-    """Zernio account id -> the profile that owns it.
-
-    A profile can post to an account it does not own (the band uses Kinger's
-    LinkedIn), so `borrowed` decides ownership, and ownership decides whose
-    followers and whose numbers these are.
-    """
+    """Zernio account id -> the profile that owns it."""
     out = {}
     for slug, p in profiles().items():
         z = ((p or {}).get("zernio") or {})
-        borrowed = set(z.get("borrowed") or [])
         for chan, acct in (z.get("accounts") or {}).items():
-            if acct in (None, "", "TODO") or chan in borrowed:
+            if acct in (None, "", "TODO"):
                 continue
             out[acct] = dict(slug=slug, label=(p or {}).get("label") or slug)
     return out
 
 
 def channel_account(profile, channel):
-    """The Zernio account a channel points at, as that profile names it.
-
-    The same account wears two channel keys: the band calls Kinger's Instagram
-    `instagram_sk`, Kinger calls it `instagram`. The account id is the only
-    stable name for it.
-    """
+    """The Zernio account a channel points at, as that profile names it."""
     z = ((profiles().get(profile) or {}).get("zernio") or {})
     acct = (z.get("accounts") or {}).get(channel)
     return None if acct in (None, "", "TODO") else acct
 
 
-def lands_on(profile, post_profile, channel):
-    """Whether a post arrives on one of this profile's own accounts.
-
-    Composing and landing are different questions. A band post to Kinger's
-    Instagram is band work for credit, but it is on Kinger's calendar that it
-    takes up a slot, and his calendar is where he would notice a clash.
-    """
-    if post_profile == profile:
-        return True
-    acct = channel_account(post_profile, channel)
-    return bool(acct) and (account_owner().get(acct) or {}).get("slug") == profile
-
-
-def account_ids(profile, include_borrowed=True):
-    """Every Zernio account this profile can reach."""
+def account_ids(profile):
+    """Every Zernio account this profile owns."""
     z = ((profiles().get(profile) or {}).get("zernio") or {})
-    borrowed = set(z.get("borrowed") or [])
     return {a for c, a in (z.get("accounts") or {}).items()
-            if a not in (None, "", "TODO")
-            and (include_borrowed or c not in borrowed)}
+            if a not in (None, "", "TODO")}
 
 
 def channel_spec(cfg, profile, channel):
@@ -209,8 +183,8 @@ CREATE TABLE IF NOT EXISTS posts (
   group_id      TEXT,          -- one asset posted across several accounts
   why           TEXT,          -- the angle the draft took, or why it is thin
   state         TEXT NOT NULL DEFAULT 'allocated',
-  needs_signoff INTEGER DEFAULT 0,
-  signed_off    INTEGER DEFAULT 0,
+  needs_signoff INTEGER DEFAULT 0,   -- unused, kept so older desk.db files load
+  signed_off    INTEGER DEFAULT 0,   -- unused, as above
   handed_off    TEXT,
   max_chars     INTEGER,
   zernio_id     TEXT,
@@ -479,49 +453,6 @@ def touch(row_id):
                  (datetime.now().isoformat(timespec="seconds"), row_id))
 
 
-# ---------------------------------------------------------------- sync
-
-@app.post("/api/sync")
-def sync():
-    """Re-run the allocator and merge. Anything past 'allocated' is untouched."""
-    rng = request.get_json(silent=True) or {}
-    start = rng.get("from") or date.today().isoformat()
-    end = rng.get("to") or "2027-06-30"
-    try:
-        subprocess.run(
-            [sys.executable, "allocate.py", "--from", start, "--to", end],
-            cwd=ROOT, check=True, capture_output=True, text=True, timeout=60)
-    except subprocess.CalledProcessError as e:
-        return jsonify(error=e.stderr.strip()[:500]), 500
-
-    slots = json.loads((ROOT / "schedule.json").read_text())
-    con = db()
-    profs = campaign_profiles()
-    added = kept = 0
-    cfg = channels_cfg()
-    for s in slots:
-        key = f"{s['date']}|{s['channel']}|{s['campaign']}|{s.get('asset')}"
-        if con.execute("SELECT 1 FROM posts WHERE slot_key=?", (key,)).fetchone():
-            kept += 1
-            continue
-        con.execute(
-            """INSERT INTO posts (slot_key,date,time,channel,channel_label,campaign,
-               profile,phase,asset,asset_label,asset_type,needs_signoff,max_chars,updated)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (key, s["date"], s["time"], s["channel"], s["channel_label"],
-             s["campaign"], profs.get(s["campaign"]), s["phase"], s.get("asset"),
-             s.get("asset_label"), s.get("asset_type"),
-             int(bool(s.get("requires_signoff"))),
-             s.get("max_chars"), datetime.now().isoformat(timespec="seconds")))
-        col = default_collaborators(cfg, profs.get(s["campaign"]), s["channel"])
-        if col:
-            con.execute("UPDATE posts SET collaborators=? WHERE slot_key=?",
-                        (json.dumps(col), key))
-        added += 1
-    con.commit()
-    return jsonify(added=added, unchanged=kept, total=len(slots))
-
-
 # ---------------------------------------------------------------- reads
 
 @app.get("/api/posts")
@@ -538,18 +469,9 @@ def posts():
     q += " ORDER BY date, time, channel"
     rows = [dict(r) for r in db().execute(q, p)]
 
-    # The profile filter is not a column comparison. A post composed by the
-    # band and sent to Kinger's account is stored as the band's, but it is on
-    # Kinger's calendar that it occupies a slot, so he has to be able to see
-    # it. Whose work it is stays a separate question, answered in Numbers.
     only = request.args.get("profile")
     if only:
-        labels = {k: (v or {}).get("label") or k for k, v in profiles().items()}
-        rows = [r for r in rows if lands_on(only, r["profile"], r["channel"])]
-        for r in rows:
-            r["borrowed"] = r["profile"] != only
-            r["origin"] = r["profile"]
-            r["origin_label"] = labels.get(r["profile"], r["profile"])
+        rows = [r for r in rows if r["profile"] == only]
     return jsonify(rows)
 
 
@@ -588,8 +510,6 @@ def summary():
                    waiting=one("state='drafted'"),
                    ready=one("state='allocated' AND media_id IS NOT NULL"),
                    unwritten=one("state='allocated' AND media_id IS NULL"),
-                   signoff=one("""needs_signoff=1 AND signed_off=0
-                                  AND state IN ('drafted','approved')"""),
                    media=con.execute(
                        "SELECT COUNT(*) FROM media" + (" WHERE profile=?" if prof else ""),
                        [prof] if prof else []).fetchone()[0])
@@ -602,7 +522,7 @@ def edit(pid):
     body = request.get_json(force=True)
     fields = {k: v for k, v in body.items()
               if k in ("copy", "first_comment", "media_url", "media_id",
-                       "note", "signed_off", "date", "time", "title")}
+                       "note", "date", "time", "title")}
     # Handle lists arrive as arrays and are stored as JSON.
     for k in ("tags", "collaborators", "hashtags"):
         if k in body:
@@ -669,8 +589,6 @@ def decide(pid, action):
     if action == "approve":
         if not (row["copy"] or "").strip():
             return jsonify(error="Write the copy before approving."), 400
-        if row["needs_signoff"] and not row["signed_off"]:
-            return jsonify(error="Ross has not signed off on this one."), 400
         if row["state"] in ("scheduled", "published"):
             return jsonify(error="Already sent to Zernio."), 400
         new = "approved"
@@ -872,13 +790,11 @@ def api_accounts():
     plats = cfg.get("platforms") or {}
     today = date.today().isoformat()
     only = request.args.get("profile")
-    owner = account_owner()
     out = []
     for prof, pdata in profiles().items():
         if only and prof != only:
             continue
         z = (pdata or {}).get("zernio") or {}
-        borrowed = set(z.get("borrowed") or [])
         defaults = set((pdata or {}).get("post_by_default") or [])
         for chan, acct in (z.get("accounts") or {}).items():
             if acct in (None, "", "TODO"):
@@ -889,38 +805,15 @@ def api_accounts():
                 """SELECT COUNT(*) FROM posts WHERE profile=? AND channel=?
                    AND state='allocated' AND media_id IS NULL AND date >= ?""",
                 (prof, chan, today)).fetchone()[0]
-            # A borrowed row is someone else's account, so name them, not the
-            # profile doing the posting. Otherwise the band's list reads
-            # "Instagram" twice with no way to tell which is which.
-            who = owner.get(acct) or {}
             out.append(dict(
                 profile=prof,
-                profile_label=(who.get("label") if chan in borrowed
-                               else (pdata or {}).get("label") or prof),
+                profile_label=(pdata or {}).get("label") or prof,
                 channel=chan, platform=plat, account_id=acct,
                 label=(plats.get(plat) or {}).get("label") or plat,
                 ink=(plats.get(plat) or {}).get("ink", "#8A8F86"),
                 delivery=ch.get("delivery") or "zernio",
-                owns=chan not in borrowed,
                 free_slots=free, on=chan in defaults))
-
-    # One Zernio account can be reachable from two profiles: the band posts to
-    # Kinger's LinkedIn as a channel of its own campaign. Show it once, on the
-    # profile that actually has slots for it.
-    best = {}
-    for a in out:
-        prev = best.get(a["account_id"])
-        # An owner beats a borrower; otherwise whoever has slots free.
-        better = (not prev
-                  or (a["owns"] and not prev["owns"])
-                  or (a["owns"] == prev["owns"] and a["free_slots"] > prev["free_slots"]))
-        if better:
-            if prev:
-                a["shared_with"] = prev["profile_label"]
-            best[a["account_id"]] = a
-        else:
-            prev["shared_with"] = a["profile_label"]
-    return jsonify(list(best.values()))
+    return jsonify(out)
 
 
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -1008,12 +901,12 @@ def create_draft(mid):
             con.execute(
                 """INSERT OR IGNORE INTO posts (slot_key,date,time,channel,
                    channel_label,campaign,profile,phase,asset_label,asset_type,
-                   needs_signoff,max_chars,updated)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   max_chars,updated)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (key, when, at, chan, ch.get("label") or chan, camp, prof,
                  phase_for(cfg, ROOT / "campaigns" / camp, when),
                  m["original"], "video_9x16" if m["kind"] == "video" else "image",
-                 int(bool(ch.get("requires_signoff"))), ch.get("max_chars"),
+                 ch.get("max_chars"),
                  datetime.now().isoformat(timespec="seconds")))
             row = con.execute("SELECT * FROM posts WHERE slot_key=?", (key,)).fetchone()
             if not row:
@@ -1066,14 +959,14 @@ def slot_for(con, cfg, prof, chan, media, mode, when, at):
         key = f"{when}|{at}|{chan}|{camp}|{prof}|picked-{media['id']}"
         con.execute(
             """INSERT OR IGNORE INTO posts (slot_key,date,time,channel,channel_label,
-               campaign,profile,phase,asset_label,asset_type,needs_signoff,
-               max_chars,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               campaign,profile,phase,asset_label,asset_type,
+               max_chars,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (key, when, at or ch.get("time") or "09:00", chan,
              ch.get("label") or chan, camp, prof,
              phase_for(cfg, ROOT / "campaigns" / camp, when),
              media["original"],
              "video_9x16" if media["kind"] == "video" else "image",
-             int(bool(ch.get("requires_signoff"))), ch.get("max_chars"),
+             ch.get("max_chars"),
              datetime.now().isoformat(timespec="seconds")))
         return con.execute("SELECT * FROM posts WHERE slot_key=?", (key,)).fetchone()
 
@@ -1094,12 +987,12 @@ def slot_for(con, cfg, prof, chan, media, mode, when, at):
     key = f"{d}|{chan}|{camp}|{prof}|adhoc-{media['id']}"
     con.execute(
         """INSERT OR IGNORE INTO posts (slot_key,date,time,channel,channel_label,
-           campaign,profile,phase,asset_label,asset_type,needs_signoff,
-           max_chars,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           campaign,profile,phase,asset_label,asset_type,
+           max_chars,updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
         (key, d, t, chan, ch.get("label") or chan, camp, prof,
          phase_for(cfg, ROOT / "campaigns" / camp, d), media["original"],
          "video_9x16" if media["kind"] == "video" else "image",
-         int(bool(ch.get("requires_signoff"))), ch.get("max_chars"),
+         ch.get("max_chars"),
          datetime.now().isoformat(timespec="seconds")))
     return con.execute("SELECT * FROM posts WHERE slot_key=?", (key,)).fetchone()
 
@@ -1134,7 +1027,7 @@ def compose_draft():
     stub = dict(channel=chan, channel_label=ch.get("label") or chan,
                 campaign=camp, profile=prof_slug, phase="launch",
                 date=date.today().isoformat(), time=ch.get("time") or "09:00",
-                max_chars=ch.get("max_chars"), needs_signoff=ch.get("requires_signoff"),
+                max_chars=ch.get("max_chars"),
                 asset_label=(m or {}).get("original"))
     # A post about a page is a summary of that page, so the page travels with
     # the brief. Without it the writer has only the source pack, which on this
@@ -1775,8 +1668,7 @@ def compose():
 
     roles = b.get("people") or {}          # {person name: "tag"|"collab"}
     # People are listed once, on the profile you were looking at. Resolve their
-    # handles from there whatever account the post lands on, so posting to
-    # Kinger's Instagram still tags the same people.
+    # handles from there whatever account the post lands on.
     book = ((profiles().get(b.get("profile") or lead_profile(media)) or {})
             .get("handles") or {})
     accounts = b.get("accounts") or []
@@ -2353,6 +2245,25 @@ def scope_clause(scope):
 
 GEMINI_RATIO = {"portrait": "9:16", "landscape": "16:9", "square": "1:1"}
 
+
+def recompose_prompt(shape, scope, theme):
+    """The ask for the second shape, drawn from the first.
+
+    The scope goes again here. Left out, the palette's house teal was the only
+    colour instruction the portrait got, and it pulled the instrument's own
+    look back to generic teal: the LinkedIn landscape was on brand and the
+    Instagram portrait made from it was not.
+    """
+    return (scope_clause(scope)
+            + "Recompose the attached image as a "
+            f"{'vertical' if shape == 'portrait' else 'square'} picture. "
+            "Same artwork, same subject, same inks, same mood: this is the "
+            "other crop of one image, not a new idea. Re-stage the "
+            "composition for the new proportions rather than stretching, "
+            "padding or cropping it, and keep the subject clear of the "
+            "outer edges.\n\n" + GEMINI_STYLE.replace(
+                "{palette}", PALETTES.get(theme, PALETTES["dark"])))
+
 # The model drifts to a white page unless the ground is stated flatly and
 # early, so each theme says it twice: what the ground is, and what it is not.
 PALETTES = {
@@ -2499,17 +2410,8 @@ def image_generate():
             size = sl.SHAPES.get(shape)
             if not size:
                 continue
-            ask = prompt if ref is None else (
-                "Recompose the attached image as a "
-                f"{'vertical' if shape == 'portrait' else 'square'} picture. "
-                "Same artwork, same subject, same inks, same mood: this is the "
-                "other crop of one image, not a new idea. Re-stage the "
-                "composition for the new proportions rather than stretching, "
-                "padding or cropping it, and keep the subject clear of the "
-                "outer edges.\n\n" + GEMINI_STYLE.replace(
-                    "{palette}",
-                    PALETTES.get((b.get("theme") or "dark").lower(),
-                                 PALETTES["dark"])))
+            ask = prompt if ref is None else recompose_prompt(
+                shape, scope, (b.get("theme") or "dark").lower())
             try:
                 blob, mime = gemini_image(ask, shape, key, ref=ref)
             except urllib.error.HTTPError as e:
@@ -2555,6 +2457,12 @@ SCRIMS = {"light": 0.25, "medium": 0.45, "heavy": 0.62}
 BRAND_MARK = ROOT / "brand" / "logo-lockup.png"
 MARK_WIDTH = 0.26           # of the frame width. A wide lockup, not a square mark.
 MARK_SIDE = 0.055           # margin in from the edges, mark and url alike
+# A tall picture is not shown tall in a feed. Instagram crops 9:16 to the
+# middle 4:5 while people scroll (3:4 in its newer grid, which is taller, so
+# 4:5 is the one to fit), and TikTok and Reels lay their own tabs and caption
+# over the top and bottom. Corner furniture on a portrait sits inside the
+# middle 4:5 band, or the logo, the instrument and the link are what get cut.
+FEED_SAFE = 5 / 4           # height over width of the band that is always seen
 
 # Everything small on the frame is sized off the SHORT edge, not the height.
 # Both shapes are 1080 on their short edge, so a landscape and a portrait come
@@ -2729,6 +2637,9 @@ def media_render():
         w2, h2 = size
         short = min(w2, h2)          # what the small furniture is sized from
         pad = int(w2 * MARK_SIDE)
+        # Pushed in from the top and bottom on a portrait, so the corners sit
+        # inside what a feed actually shows. Nothing on a landscape.
+        vin = max(0, int((h2 - w2 * FEED_SAFE) / 2)) if h2 > w2 else 0
         ins, filters, last = ["-i", str(titled)], [], "0:v"
 
         # The mark sits top right. The url, when it is wanted, sits bottom left,
@@ -2736,7 +2647,7 @@ def media_render():
         if b.get("mark", True) and BRAND_MARK.exists():
             ins += ["-i", str(BRAND_MARK)]
             filters.append(f"[1:v]scale={int(w2 * MARK_WIDTH)}:-1[m]")
-            filters.append(f"[{last}][m]overlay=x=W-w-{pad}:y={pad}:"
+            filters.append(f"[{last}][m]overlay=x=W-w-{pad}:y={vin + pad}:"
                            f"format=auto[k]")
             last = "k"
 
@@ -2751,7 +2662,7 @@ def media_render():
                 f"textfile='{tf}':expansion=none:"
                 f"fontsize={int(short * TAG_SIZE)}:fontcolor=white@0.92:"
                 f"shadowcolor=black@0.6:shadowx=2:shadowy=2:"
-                f"x={pad}:y={pad}[t]")
+                f"x={pad}:y={vin + pad}[t]")
             last = "t"
 
         # When, under the instrument. Tucked directly beneath it so the two
@@ -2765,7 +2676,7 @@ def media_render():
                 f"textfile='{sf}':expansion=none:"
                 f"fontsize={int(short * STAMP_SIZE)}:fontcolor=white@0.72:"
                 f"shadowcolor=black@0.6:shadowx=2:shadowy=2:"
-                f"x={pad}:y={pad + int(short * TAG_SIZE * 1.45)}[w]")
+                f"x={pad}:y={vin + pad + int(short * TAG_SIZE * 1.45)}[w]")
             last = "w"
 
         # The scoring, directly under the headline. Where the headline ends is
@@ -2838,7 +2749,7 @@ def media_render():
                 f"textfile='{uf}':expansion=none:"
                 f"fontsize={int(short * upct / 100.0)}:fontcolor=white@0.78:"
                 f"shadowcolor=black@0.6:shadowx=2:shadowy=2:"
-                f"x={pad}:y=h-th-{pad}[u]")
+                f"x={pad}:y=h-th-{pad + vin}[u]")
             last = "u"
 
         cmd = [sl.exe(), "-y"] + ins
@@ -3107,12 +3018,28 @@ def api_markets():
                 ready_at = (then + timedelta(hours=gap)).strftime("%H:%M")
             except ValueError:
                 pass
+        # The channel-wide spacing, the same rule channel_due applies.
+        spread = spread_hours(cfg, v)
+        any_seen = max((t for (c, _m), t in last.items() if c == chan and t),
+                       default=None)
+        spaced = None
+        if any_seen and spread:
+            try:
+                then = datetime.fromisoformat(any_seen)
+                spaced = (datetime.now() - then).total_seconds() / 3600
+                if spaced < spread:
+                    nxt = (then + timedelta(hours=spread)).strftime("%H:%M")
+                    ready_at = max(ready_at or "", nxt)
+            except ValueError:
+                spaced = None
         why = ("quiet hours" if in_quiet
                else "daily cap reached" if cap and used >= cap
                else f"too soon, {gap}h gap"
-               if (hours_since is not None and hours_since < gap) else "")
+               if (hours_since is not None and hours_since < gap)
+               else f"spacing, {spread:g}h between markets"
+               if (spaced is not None and spaced < spread) else "")
         return dict(last=seen, hours_since=hours_since, ready_at=ready_at,
-                    used_today=used, blocked=why)
+                    used_today=used, blocked=why, spread_hours=spread)
 
     out = []
     for chan, v in chans.items():
@@ -3249,6 +3176,35 @@ def wire_sync():
                    held=con.execute("SELECT COUNT(*) FROM briefs").fetchone()[0])
 
 
+# The mirror only grows when something tops it up, and the autoposter reads
+# nothing else. Left to the Sync button it went a day stale, every market read
+# zero articles in the last 24 hours, and the picker was choosing from
+# yesterday's leftovers. A full sync is about four minutes.
+WIRE_EVERY = int(os.environ.get("WIRE_EVERY", "3600"))   # seconds
+
+
+def wire_loop():
+    """Sync the Wire whenever the mirror is older than WIRE_EVERY."""
+    while True:
+        try:
+            if os.environ.get("GUAVY_API_KEY"):
+                with app.app_context():
+                    last = setting("wire.synced")
+                    age = ((datetime.now() - datetime.fromisoformat(last))
+                           .total_seconds() if last else None)
+                if age is None or age >= WIRE_EVERY:
+                    with app.test_request_context(json={}):
+                        got = wire_sync()
+                    body = got[0] if isinstance(got, tuple) else got
+                    app.logger.info("wire sync: %s", body.get_json())
+        except Exception as e:                       # never let the loop die
+            try:
+                app.logger.warning("wire sync loop: %s", e)
+            except Exception:
+                pass
+        time.sleep(300)
+
+
 def wire_counts(con, hours=24):
     """Articles per market in the window, straight out of the mirror."""
     cut = int((time.time() - hours * 3600) * 1000)
@@ -3330,15 +3286,7 @@ def _generate_art(profile, title, copy, market, symbol, theme, shapes):
             size = sl.SHAPES.get(shape)
             if not size:
                 continue
-            ask = prompt if ref is None else (
-                "Recompose the attached image as a "
-                f"{'vertical' if shape == 'portrait' else 'square'} picture. "
-                "Same artwork, same subject, same inks, same mood: this is the "
-                "other crop of one image, not a new idea. Re-stage the "
-                "composition for the new proportions rather than stretching, "
-                "padding or cropping it, and keep the subject clear of the "
-                "outer edges.\n\n" + GEMINI_STYLE.replace(
-                    "{palette}", PALETTES.get(theme, PALETTES["dark"])))
+            ask = prompt if ref is None else recompose_prompt(shape, scope, theme)
             blob, mime = gemini_image(ask, shape, key, ref=ref)
             raw = work / f"raw-{shape}"
             raw.write_bytes(blob)
@@ -3400,7 +3348,7 @@ def _compose_one(con, cfg, profile, chan, media, copy, asset, label, title,
     tags_h = hashtags_for(prof_data, plat, asset)
     # campaign='markets' is what every gate keys on: the cadence, the daily
     # cap, the pacing table and the never-twice list all filter on it. A slot
-    # borrowed from the allocator arrives as some other campaign, and left
+    # made for another campaign arrives as that campaign, and left
     # that way the autoposter cannot see its own work and never stops.
     con.execute("""UPDATE posts SET media_id=?, media_ids=?, copy=?,
                    first_comment=?, title=?, hashtags=?, asset=?,
@@ -3434,7 +3382,10 @@ def _compose_one(con, cfg, profile, chan, media, copy, asset, label, title,
 #
 # Defaults for a post nobody is watching. The theme alternates so a feed does
 # not become a wall of one ground.
-AUTO_SCRIM = os.environ.get("AUTO_SCRIM", "medium")     # the middle of four
+# Per theme. The light ground is pale enough that white lettering needs the
+# medium scrim to read; the dark ground only needs the light one.
+AUTO_SCRIM = {"dark": os.environ.get("AUTO_SCRIM_DARK", "light"),
+              "light": os.environ.get("AUTO_SCRIM_LIGHT", "medium")}
 AUTO_TEXT_PCT = float(os.environ.get("AUTO_TEXT_PCT", "8.0"))
 AUTO_WEIGHT = os.environ.get("AUTO_WEIGHT", "Bold")
 AUTO_TICK = int(os.environ.get("AUTO_TICK", "120"))     # seconds between looks
@@ -3508,10 +3459,43 @@ def channel_due(con, cfg, chan, market, profile, now=None):
                                f"{spec.get('min_hours')}h")
         except ValueError:
             pass
+
+    # Each market keeps its own timer, so after a quiet night all four came
+    # due at once and landed on one account within the hour. The channel also
+    # waits between any two markets posts: by default its per-market gap shared
+    # out across the markets, so four markets on a 10h gap go every 2.5h.
+    spread = spread_hours(cfg, spec)
+    last_any = con.execute(
+        """SELECT MAX(updated) t FROM posts WHERE campaign='markets'
+           AND profile=? AND channel=?""", (profile, chan)).fetchone()["t"]
+    if last_any and spread:
+        try:
+            gap = (datetime.now() - datetime.fromisoformat(last_any)).total_seconds() / 3600
+            if gap < spread:
+                return False, (f"spacing: {gap:.1f}h since this channel's "
+                               f"last market post, needs {spread:g}h")
+        except ValueError:
+            pass
     return True, ""
 
 
-def auto_once(market, channel, profile, send=True, at_minutes=None):
+def spread_hours(cfg, spec):
+    """Hours between any two markets posts on one channel."""
+    if spec.get("spread_hours") is not None:
+        return float(spec["spread_hours"])
+    return round(float(spec.get("min_hours") or 0) / max(len(MARKETS), 1), 2)
+
+
+def market_last(con, profile, chan, market):
+    """When this market last posted to this channel, '' if never."""
+    return con.execute(
+        """SELECT MAX(updated) t FROM posts WHERE campaign='markets'
+           AND profile=? AND channel=? AND asset LIKE ?""",
+        (profile, chan, f"{market}:%")).fetchone()["t"] or ""
+
+
+def auto_once(market, channel, profile, send=True, at_minutes=None,
+              insist=False):
     """Find a story, draw it, write it, and send it if asked.
 
     `send=False` builds everything and stops before the push, so the whole
@@ -3524,19 +3508,21 @@ def auto_once(market, channel, profile, send=True, at_minutes=None):
     m = markets_cfg()
     rank = m.get("rank") or {}
     since = (time.time() - float(m.get("window_hours") or 24) * 3600) * 1000
+    posted_syms, _t = recent_posts(con, market)
     cands = shortlist(con, market, since, float(m.get("min_sentiment") or 0),
                       float(rank.get("sentiment", 0.6)),
-                      float(rank.get("clout", 0.4)))
+                      float(rank.get("clout", 0.4)), skip_symbols=posted_syms)
     if not cands:
-        return dict(skipped="nothing on the Wire above the floor")
+        return dict(skipped="nothing on the Wire above the floor that is not "
+                            "a ticker already posted today")
     _budget(t0, "the picker")
-    got = writer.pick(cands, market, profiles().get(profile) or {})
-    if got.get("none"):
-        return dict(skipped="the picker turned down everything on the list")
-    brief = next((x for x in cands
-                  if x.get("article_id") == got.get("article_id")), None)
+    got = writer.pick(cands, market, profiles().get(profile) or {},
+                      posted=recent_posts(con, market, 48)[1])
+    # The loop leaves a slot empty rather than post a weak story. A hand fire
+    # passes `insist`, because someone has already decided to post.
+    brief = chosen_brief(got, cands, insist=insist)
     if not brief:
-        return dict(skipped="the picker chose nothing we hold")
+        return dict(skipped="the picker turned down everything on the list")
 
     sym = brief.get("symbol") or ""
     scope = brand_scope(market, sym) or {}
@@ -3579,15 +3565,14 @@ def auto_once(market, channel, profile, send=True, at_minutes=None):
 
     stamp = datetime.now().strftime("%-I:%M %p %B %-d, %Y").replace("AM", "am").replace("PM", "pm")
     # The profile's own face, the same one the sheet uses. Left out, the
-    # renderer falls back to slideshow's default, which is chosen for a band's
-    # posters: condensed, all caps, and missing the arrow glyphs, so the
-    # direction mark came out as a box.
+    # renderer falls back to slideshow's default face: condensed, all caps,
+    # and missing the arrow glyphs, so the direction mark came out as a box.
     face = ((profiles().get(profile) or {}).get("brand") or {}).get("font") or ""
 
     _budget(t0, "the render")
     rendered = []
     for row in art:
-        out = _render_one(row, title, scrim=AUTO_SCRIM, weight=AUTO_WEIGHT,
+        out = _render_one(row, title, scrim=AUTO_SCRIM.get(theme, "light"), weight=AUTO_WEIGHT,
                           text_pct=AUTO_TEXT_PCT, label=label, stamp=stamp,
                           direction=direction, scores=scores, font=face,
                           url_text=f"guavy.com/wire/{market}")
@@ -3651,7 +3636,8 @@ def market_fire(market):
         return jsonify(error="Already building a post. One at a time."), 429
     try:
         out = auto_once(market, chan, prof, send=bool(b.get("send")),
-                        at_minutes=b.get("at_minutes"))
+                        at_minutes=b.get("at_minutes"),
+                        insist=bool(b.get("insist", True)))
     except OutOfTime as e:
         out = dict(error=str(e))
     finally:
@@ -3673,26 +3659,30 @@ def auto_loop():
                     continue
                 con, cfg = db(), markets_cfg()
                 prof = next(iter(profiles()), "")
-                done = False
-                for key, _, _ in MARKETS:
-                    if done or market_mode(key) != "auto":
+                # Every channel, and on each the market that has waited
+                # longest goes first. Walking the markets in a fixed order let
+                # crypto take every slot that opened.
+                pairs = []
+                for chan in (cfg.get("channels") or {}):
+                    for key, _, _ in MARKETS:
+                        if market_mode(key) == "auto":
+                            pairs.append((market_last(con, prof, chan, key),
+                                          key, chan))
+                for _last, key, chan in sorted(pairs):
+                    ok, _why = channel_due(con, cfg, chan, key, prof)
+                    if not ok:
                         continue
-                    for chan in (cfg.get("channels") or {}):
-                        ok, _why = channel_due(con, cfg, chan, key, prof)
-                        if not ok:
-                            continue
-                        if not _FIRING.acquire(blocking=False):
-                            break          # a hand-fired post is building
-                        app.logger.info("autopost firing %s -> %s", key, chan)
-                        try:
-                            out = auto_once(key, chan, prof, send=True)
-                            app.logger.info("autopost result: %s", out)
-                        except Exception as e:
-                            app.logger.warning("autopost failed: %s", e)
-                        finally:
-                            _FIRING.release()
-                        done = True
-                        break
+                    if not _FIRING.acquire(blocking=False):
+                        break              # a hand-fired post is building
+                    app.logger.info("autopost firing %s -> %s", key, chan)
+                    try:
+                        out = auto_once(key, chan, prof, send=True)
+                        app.logger.info("autopost result: %s", out)
+                    except Exception as e:
+                        app.logger.warning("autopost failed: %s", e)
+                    finally:
+                        _FIRING.release()
+                    break
         except Exception as e:                       # never let the loop die
             try:
                 app.logger.warning("autopost loop: %s", e)
@@ -3740,7 +3730,55 @@ def market_scan(market):
 SHORTLIST = int(os.environ.get("WIRE_SHORTLIST", "25"))
 
 
-def shortlist(con, market, since_ms, min_sentiment, w_sent, w_clout, n=None):
+def chosen_brief(got, cands, insist=False):
+    """The candidate the picker chose, or None.
+
+    When it turns the whole list down, an unattended post stays unposted. A
+    person asking by hand has already decided they want something, so
+    `insist` takes the picker's least bad candidate instead, and failing that
+    the strongest by score it did not reject.
+    """
+    by_id = {x.get("article_id"): x for x in cands}
+    if not got.get("none") and got.get("article_id") in by_id:
+        return dict(by_id[got["article_id"]], why=got.get("why") or "",
+                    duplicates=got.get("duplicates") or [], judged=True)
+    if not insist:
+        return None
+    pick = by_id.get(got.get("best_available"))
+    if pick:
+        return dict(pick, judged=True, weak=True,
+                    why="Nothing on the list is clearly material. This is "
+                        "the picker's best of what there is.")
+    turned = {r.get("article_id") for r in (got.get("rejected") or [])}
+    rest = [x for x in cands if x.get("article_id") not in turned] or cands
+    return dict(rest[0], judged=False, weak=True,
+                why="The picker chose nothing, so this is the strongest by "
+                    "score.") if rest else None
+
+
+def recent_posts(con, market, hours=24):
+    """Market posts that went out, or are going, in the last `hours`.
+
+    Returns (symbols, titles). An article id alone was not enough: three
+    outlets covering one Boeing contract are three ids, so the same story went
+    out twice on one day and "Find another article" kept offering it back.
+    """
+    cut = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
+    syms, titles = set(), []
+    for r in con.execute(
+            """SELECT asset, title FROM posts WHERE campaign='markets'
+               AND state != 'rejected' AND asset LIKE ? AND updated >= ?
+               ORDER BY updated DESC""", (f"{market}:%", cut)):
+        _m, sym, _a = asset_parts(r["asset"])
+        if sym:
+            syms.add(sym.upper())
+        if r["title"] and r["title"] not in titles:
+            titles.append(r["title"])
+    return syms, titles
+
+
+def shortlist(con, market, since_ms, min_sentiment, w_sent, w_clout, n=None,
+              exclude=(), skip_symbols=()):
     """The strongest candidates out of the mirror, best score first.
 
     Scoring is the cheap half: how far the sentiment is from neutral, and how
@@ -3763,7 +3801,7 @@ def shortlist(con, market, since_ms, min_sentiment, w_sent, w_clout, n=None):
                WHERE b.market=? AND b.ts>? GROUP BY b.article_id""",
             (market, cut)):
         d = dict(r)
-        if d.get("article_id") in spent:
+        if d.get("article_id") in spent or d.get("article_id") in exclude:
             continue
         if abs(float(d.get("sentiment") or 0)) < min_sentiment:
             continue
@@ -3775,6 +3813,10 @@ def shortlist(con, market, since_ms, min_sentiment, w_sent, w_clout, n=None):
         except ValueError:
             d["impacted"] = []
         d["symbol"] = (d.pop("syms", "") or "").split(",")[0]
+        # A ticker already posted today is spent too: another outlet's take
+        # on the same news is not a new story.
+        if d["symbol"] and d["symbol"].upper() in skip_symbols:
+            continue
         rows.append(d)
     rows.sort(key=lambda d: (d["weight"], d.get("ts") or 0), reverse=True)
     return rows[:(n or SHORTLIST)]
@@ -3810,10 +3852,23 @@ def market_article(market):
             # everything already on the Wire, however good.
             window = float(m.get("window_hours") or 24)
             since = (time.time() - window * 3600) * 1000
-            cands = shortlist(con, market, since,
-                              float(m.get("min_sentiment") or 0),
-                              float(rank.get("sentiment", 0.6)),
-                              float(rank.get("clout", 0.4)))
+            # The article already on screen is not a new one. Asking again
+            # means "something else".
+            posted_syms, posted_titles = recent_posts(con, market)
+            skip = posted_syms | {str(x).upper()
+                                  for x in (b.get("exclude_symbols") or [])}
+            args = (con, market, since, float(m.get("min_sentiment") or 0),
+                    float(rank.get("sentiment", 0.6)),
+                    float(rank.get("clout", 0.4)))
+            cands = shortlist(*args, exclude=set(b.get("exclude") or []),
+                              skip_symbols=skip)
+            if not cands:
+                # Every ticker on the Wire has had its turn today. Asked by
+                # hand, a repeat ticker beats nothing, but never one already
+                # shown on this card.
+                cands = shortlist(*args, exclude=set(b.get("exclude") or []),
+                                  skip_symbols={str(x).upper() for x in
+                                                (b.get("exclude_symbols") or [])})
             brief = None
             if cands and b.get("judge", True):
                 # Scoring got us to a shortlist. Which of them actually
@@ -3821,22 +3876,13 @@ def market_article(market):
                 try:
                     import writer
                     got = writer.pick(cands, market,
-                                      profiles().get(prof) or {})
+                                      profiles().get(prof) or {},
+                                      posted=recent_posts(con, market, 48)[1])
                 except Exception as e:
                     app.logger.warning("picker failed: %s", e)
                     got = {}
-                if got.get("none"):
-                    return jsonify(error=(
-                        "Nothing on the Wire is a real market story right now. "
-                        f"Looked at the top {len(cands)} by score and turned "
-                        "them all down.")), 404
-                chosen = got.get("article_id")
-                brief = next((x for x in cands
-                              if x.get("article_id") == chosen), None)
-                if brief:
-                    brief = dict(brief, why=got.get("why") or "",
-                                 duplicates=got.get("duplicates") or [],
-                                 judged=True)
+                # Asked by hand, so always come back with something.
+                brief = chosen_brief(got, cands, insist=True)
             if not brief and cands:
                 brief = dict(cands[0], judged=False)
             if not brief and not cands:
@@ -3978,9 +4024,6 @@ def followers():
     # Which profile each Zernio account belongs to, per profiles.yaml.
     owner = account_owner()
     only = request.args.get("profile")
-    # Reachable, not owned. The band posts to Kinger's accounts, so they belong
-    # on the band's list. Who the followers are credited to is a separate
-    # question, answered by the tiles.
     reach = account_ids(only) if only else None
 
     today = date.today().isoformat()
@@ -4019,10 +4062,7 @@ def followers():
         hist.setdefault(day, {})
         hist[day][slug] = hist[day].get(slug, 0) + (n or 0)
         per.setdefault(aid, {})[day] = n
-    # Totals for every profile regardless of scope, so the tiles can still
-    # compare the two while the list below shows only the one you picked.
-    # One total per profile whose accounts this profile can reach. Viewing
-    # Kinger's profile, the band is not in the picture at all.
+    # One total per profile, scoped to the accounts of the profile in view.
     totals = {}
     for a in raw:
         aid = a.get("_id")
@@ -4032,7 +4072,7 @@ def followers():
         if w["slug"] not in totals:
             totals[w["slug"]] = dict(label=w["label"], n=0)
         totals[w["slug"]]["n"] += a.get("followersCount") or 0
-    # profiles.yaml order, so the band comes before Kinger every time
+    # profiles.yaml order, so the tiles do not shuffle between loads
     order = [k for k in profiles() if k in totals] + \
             [k for k in totals if k not in profiles()]
     return jsonify(accounts=now, history=hist, account_history=per,
@@ -4071,10 +4111,8 @@ def zernio_published():
     owner = account_owner()
     only = request.args.get("profile")
 
-    # Whose work a post is, in order of confidence. The desk knows exactly
-    # which profile composed anything it sent, whatever account it landed on,
-    # so a band collab on Kinger's Instagram counts for the band. Only when
-    # nothing composed it here do we fall back to who owns the account.
+    # Whose work a post is, in order of confidence: the profile that composed
+    # it on the desk, and failing that, whoever owns the account.
     origin = {r["zernio_id"]: r["profile"] for r in db().execute(
         "SELECT zernio_id, profile FROM posts "
         "WHERE zernio_id IS NOT NULL AND zernio_id != ''")}
@@ -4098,10 +4136,6 @@ def zernio_published():
         by_account = (owner.get(aid) or {}).get("slug")
         from_desk = origin.get(p.get("_id"))
         slug = from_desk or by_account
-        # Whose numbers these are is decided by who made the post, not by whose
-        # account it sat on. The band posting to Kinger's Instagram is band
-        # work; Kinger posting his own is not, even though the band can reach
-        # that account.
         if only and slug != only:
             continue
         out.append(dict(
@@ -4244,8 +4278,8 @@ def api_channels():
 
 # ---------------------------------------------------------------- hand-off
 #
-# Some channels cannot be posted to by this system. Ross's LinkedIn is one: the
-# account will not be connected to Zernio. Those channels are marked
+# Some channels cannot be posted to by this system: an account that will never
+# be connected to Zernio. Those channels are marked
 # `delivery: email` in channels.yaml. The post is planned and approved here
 # exactly like any other, then emailed to whoever will post it by hand.
 
@@ -4577,7 +4611,7 @@ def post_delete(pid):
     else:
         con.execute("""UPDATE posts SET copy=NULL, first_comment=NULL, tags=NULL,
                        collaborators=NULL, hashtags=NULL, why=NULL, media_id=NULL,
-                       group_id=NULL, signed_off=0, state='allocated' WHERE id=?""",
+                       group_id=NULL, state='allocated' WHERE id=?""",
                     (pid,))
     con.commit()
     return jsonify(deleted=pid, removed=adhoc)
@@ -5133,8 +5167,6 @@ select{background:var(--raised);color:var(--ink);border:1px solid var(--rule);
 .tile.quiet .l{color:var(--faint)}
 /* A post on this profile's account that somebody else wrote. Dashed, because
    it takes up the slot but is not this profile's to edit lightly. */
-.chip.lent{border-left-style:dashed}
-.chip .lent{color:var(--faint)}
 /* --- folders --- */
 .folders{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 10px}
 .fold{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--rule);
@@ -5519,7 +5551,6 @@ table.sticky thead th{position:sticky;top:var(--htop,44px);z-index:5;
     <span class="dot"></span><span id="livetxt">Not live</span></button>
   <button class="act live" id="autobtn" aria-pressed="false">
     <span class="dot"></span><span id="autotxt">Auto off</span></button>
-  <button class="act" id="sync">Re-run allocator</button>
   <button class="act" id="pushbtn">Unsent</button>
 </header>
 
@@ -6198,8 +6229,7 @@ async function loadScopes(){
 async function loadFonts(){
   if(FONTS) return FONTS;
   FONTS = await api('/api/fonts');
-  /* The profile's own face wins: the desk's default is chosen for a band's
-     posters, which is not what a market-data product looks like. */
+  /* The profile's own face wins over the desk's default. */
   const want=((PROFS[PROF]||{}).brand||{}).font;
   if(!CAPFONT)
     CAPFONT = (want && (FONTS.fonts||[]).includes(want) ? want : null)
@@ -7095,10 +7125,6 @@ function dcard(p){
     </div>
     <div class="dsub">${esc(title(p.campaign))} · ${esc(p.phase)} phase ·
       ${esc(p.asset_label||'no asset')}</div>
-    ${p.needs_signoff&&!p.signed_off?
-      `<div class="warn">This posts as ${esc((PROFS[p.profile]||{}).label||p.profile||'someone else')}.
-       It cannot be approved until signoff is recorded.
-       <button class="act" onclick="dsign(${p.id})">Signed off</button></div>`:''}
     <textarea id="d-cp-${p.id}" oninput="dmark(${p.id},'copy',this.value);dcount(${p.id})"
       >${esc(cp)}</textarea>
     <div class="chars" id="d-cc-${p.id}"></div>
@@ -7280,11 +7306,6 @@ async function ddecide(id,a){
   const r=await api(`/api/posts/${id}/${a}`,{method:'POST'});
   if(r.error){toast(r.error); load(); return;}
   toast(a==='approve'?'Approved':'Rejected'); load();
-}
-async function dsign(id){
-  await api(`/api/posts/${id}`,{method:'PATCH',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({signed_off:1})});
-  load();
 }
 
 /* ---- the Zernio queue ---- */
@@ -7480,11 +7501,21 @@ function dimensions(a){
 
 /* The most important thing on the Wire since this profile last posted from
    Markets. Held per market so the four sub-tabs can each have one waiting. */
+/* Everything already offered on a card, articles and tickers both, so "Find
+   another article" means another story, not the same one from another outlet.
+   Cleared when the page reloads. */
+const SHOWN={};
 async function getArticle(market,btn){
   if(btn){btn.disabled=true;btn.textContent='Reading the Wire…';}
+  const seen=SHOWN[market]||(SHOWN[market]={ids:[],syms:[]});
+  const now=ART[market];
+  if(now){
+    if(now.article_id&&!seen.ids.includes(now.article_id))seen.ids.push(now.article_id);
+    if(now.symbol&&!seen.syms.includes(now.symbol))seen.syms.push(now.symbol);
+  }
   const r=await api(`/api/markets/${market}/article`,{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({profile:PROF})});
+    body:JSON.stringify({profile:PROF, exclude:seen.ids, exclude_symbols:seen.syms})});
   if(r.error){toast(r.error);MKT=null;await drawMarkets();return;}
   ART[market]=r.article;
   await drawMarkets();
@@ -8391,15 +8422,11 @@ function drawCal(){
       const k=[p.state==='approved'||p.state==='scheduled'?'appr':
                p.state==='rejected'?'rej':p.state==='allocated'?'alloc':'',
                /* Published, or simply gone by. Either way it is not ahead. */
-               p.state==='published'||p.date<today?'past':'',
-               /* On this profile's account, but somebody else's work. */
-               p.borrowed?'lent':''].filter(Boolean).join(' ');
+               p.state==='published'||p.date<today?'past':''].filter(Boolean).join(' ');
       return `<button class="chip ${k}" data-p="${p.id}"
         style="border-left-color:${cink(p.channel)}"
         onclick="open_(${p.id})">${p.time} ${esc(
           p.channel_label.split('/')[0].trim())}${
-          p.borrowed?` <span class="lent" title="written by ${
-            esc(p.origin_label||p.origin)}">&#8599;</span>`:''}${
           p.media_id?' <b style="color:var(--ok)">&#9679;</b>':''}</button>`;
     }).join('');
     const out=CALVIEW==='month'&&d.getMonth()!==m?'out':'';
@@ -8465,9 +8492,7 @@ function slotTip(p){
       ?`<video src="/media/${m.id}/raw#t=0.5" preload="metadata" muted></video>`
       :`<img src="/media/${m.id}/raw" alt="">`}</div>`:'';
   const bits=[esc(title(p.campaign)), esc(p.phase)+' phase',
-              esc(p.asset_label||'no asset'),
-              /* Landing here, but not this profile's work. */
-              p.borrowed?`written by ${esc(p.origin_label||p.origin)}`:'']
+              esc(p.asset_label||'no asset')]
              .filter(Boolean).join(' · ');
   return `<h4><span style="color:${cink(p.channel)}">&#9632;</span>
       ${esc(p.channel_label)}</h4>
@@ -9639,11 +9664,6 @@ function paintSheet(){
     <label for="ml">Asset</label>
     <select id="ml">${mopts(p)}</select>
 
-    ${p.needs_signoff&&!p.signed_off?
-      `<div class="warn">This posts as ${esc((PROFS[p.profile]||{}).label||p.profile)}.
-       It cannot be approved until signoff is recorded.
-       <button class="act" onclick="sign()">Signed off</button></div>`:''}
-
     ${plat==='youtube'?`<label for="ti">Title</label>
       <input type="text" id="ti" maxlength="100" value="${esc(p.title||'')}"
         placeholder="YouTube will not take a video without one">
@@ -9807,11 +9827,6 @@ async function save(quiet){
       tags:hlist(CUR,'tags'), collaborators:hlist(CUR,'collaborators')})});
   if(!quiet){toast('Saved'); await load(); $('#sheet').classList.remove('on');}
 }
-async function sign(){
-  await api(`/api/posts/${CUR.id}`,{method:'PATCH',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({signed_off:1})});
-  await load(); open_(CUR.id);
-}
 async function decide(a){
   await save(true).catch(()=>{});
   const r=await api(`/api/posts/${CUR.id}/${a}`,{method:'POST'});
@@ -9820,13 +9835,6 @@ async function decide(a){
   $('#sheet').classList.remove('on');
 }
 
-$('#sync').onclick=async()=>{
-  toast('Running allocator…');
-  const r=await api('/api/sync',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:'{}'});
-  toast(r.error?r.error:`${r.added} new slots, ${r.unchanged} left alone`);
-  load();
-};
 /* Approved but never sent: usually a push that failed, or a channel with no
    account. It asks before sending anything, and names every post first. */
 $('#pushbtn').onclick=async()=>{
@@ -9865,7 +9873,7 @@ def lan_ip():
 if __name__ == "__main__":
     MEDIA.mkdir(exist_ok=True)
     host = os.environ.get("HOST", "0.0.0.0")
-    # 5001, so this and the band's desk can run side by side without a fight.
+    # 5001, so this can run beside the Memphis and The Grande desk on 5000.
     port = int(os.environ.get("PORT", "5001"))
     print(f"  Guavynator  http://127.0.0.1:{port}")
     if host == "0.0.0.0":
@@ -9874,5 +9882,6 @@ if __name__ == "__main__":
     # The autoposter runs beside the desk. It does nothing until both the Live
     # switch and the autopost switch are on, so starting it here is safe.
     threading.Thread(target=auto_loop, daemon=True).start()
+    threading.Thread(target=wire_loop, daemon=True).start()
 
     app.run(host=host, port=port, debug=False)

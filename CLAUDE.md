@@ -28,18 +28,13 @@ to find. The ones that bite hardest:
 
 ## What is not done
 
-Nearly all of the configuration. `profiles.yaml` and
-`campaigns/guavy/source-pack.md` are full of TODOs, and they are load-bearing:
-the writer is handed the voice block and the source pack and nothing else, so
-an empty pack means it has nothing true to say.
+`voice.claims` in `profiles.yaml` is written and binding: read it before any
+copy. The writer's voice comes from that block plus the `## Voice` section of
+`.claude/skills/guavy-post/SKILL.md`, never the band's `social-schedule` skill.
 
-**If Guavy is the market analysis product**, performance figures, backtests and
-anything that reads as a recommendation are regulated speech. Decide what may
-be said and write it into `voice.claims` before the first post. Until then the
-honest answer to "can we post this" is no.
-
-Zernio account ids are `TODO`. Run `python3 push_zernio.py accounts` to list
-them, and paste the right ones in. Nothing will push until that is done.
+Open: who is credited on posts (`source-pack.md`), a `release` date if the
+campaign is ever more than always-on, and connecting Facebook, YouTube, TikTok
+and X, which comes last. See README "What is not done yet".
 
 ## Working here
 

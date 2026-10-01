@@ -1,14 +1,11 @@
 # Guavynator pacing and constraints.
 #
-# One account per platform, so a channel key is just the platform name. The
-# band's desk needs `instagram` and `instagram_sk` to tell two accounts apart;
-# here there is only one of each and the suffixes would be noise.
+# One account per platform, so a channel key is just the platform name.
 #
-# per_week is a ceiling, not a target, and the allocator can only place as many
-# posts as there are days in `days`. Raising one without the other does nothing.
+# When a post's timing is left on Auto, the desk puts it on the channel's next
+# day in `days`, at `time`, skipping `blackouts`.
 #
-# Everything here is inherited from the band's desk and is a guess for Guavy.
-# A product does not post like a band. Set these deliberately.
+# The days and times here are inherited, not chosen. Set them deliberately.
 timezone: America/Edmonton
 # `prefer_shape` is which crop this channel is sent when a post carries more
 # than one. Instagram wants the vertical one, LinkedIn the wide one, and
@@ -19,7 +16,6 @@ channels:
   linkedin:
     prefer_shape: landscape
     label: LinkedIn
-    per_week: 3
     accepts:
     - video_16x9
     - video_9x16
@@ -32,11 +28,10 @@ channels:
     time: 08:00
     strict_duplicates: true
     links_in_first_comment: true
-    notes: 'TODO: confirm this account exists and is connected.'
+    notes: Connected in Zernio, 23 Sep 2026.
   instagram:
     prefer_shape: portrait
     label: Instagram
-    per_week: 4
     accepts:
     - video_9x16
     - image
@@ -47,11 +42,10 @@ channels:
     - Sat
     time: '11:00'
     mirrors: facebook
-    notes: 'TODO: confirm this account exists and is connected.'
+    notes: Connected in Zernio, 23 Sep 2026.
   facebook:
     prefer_shape: landscape
     label: Facebook
-    per_week: 4
     accepts:
     - video_9x16
     - video_16x9
@@ -62,11 +56,10 @@ channels:
     - Fri
     - Sat
     time: '11:00'
-    notes: 'TODO: confirm this account exists and is connected.'
+    notes: Not connected yet. Connected last, once the post flow is proven.
   youtube:
     prefer_shape: landscape
     label: YouTube
-    per_week: 3
     accepts:
     - video_16x9
     - video_9x16
@@ -75,11 +68,10 @@ channels:
     - Fri
     - Sun
     time: '10:00'
-    notes: 'TODO: confirm this account exists and is connected.'
+    notes: Not connected yet. Connected last, once the post flow is proven.
   tiktok:
     prefer_shape: portrait
     label: TikTok
-    per_week: 5
     accepts:
     - video_9x16
     days:
@@ -89,12 +81,11 @@ channels:
     - Thu
     - Sat
     time: '18:00'
-    notes: 'TODO: confirm this account exists and is connected.'
+    notes: Not connected yet. Connected last, once the post flow is proven.
   x:
     prefer_shape: landscape
     label: X
     zernio_platform: twitter
-    per_week: 7
     accepts:
     - video_9x16
     - video_16x9
@@ -110,7 +101,7 @@ channels:
     - Sun
     time: 09:00
     max_chars: 280
-    notes: 'TODO: confirm this account exists and is connected.'
+    notes: Not connected yet. Connected last, once the post flow is proven.
 platforms:
   linkedin:
     label: LinkedIn
@@ -153,10 +144,9 @@ platforms:
 # ---------------------------------------------------------------- Markets
 #
 # The Markets tab posts the most important thing Guavy has seen since that
-# channel last heard from it. Its pacing is separate from `per_week` above,
-# which is campaign capacity: a campaign post is planned weeks out, a markets
-# post is a reaction to news, and the two compete for the same attention but
-# not for the same slots.
+# channel last heard from it. Its pacing is separate from the posting days
+# above: a campaign post is planned, a markets post is a reaction to news, and
+# the two compete for the same attention but not for the same slots.
 #
 # These are per market, not a pool. Every market gets the same allowance on a
 # channel, because there is no reason to promote crypto over commodities, and
@@ -188,6 +178,9 @@ markets:
   rank:
     sentiment: 0.6            # weight on distance from neutral
     clout: 0.4                # weight on how loud it is
+  # min_hours is per market. The channel also waits between any two market
+  # posts, so the four do not land together: spread_hours, or by default
+  # min_hours shared across the four markets (10h -> one every 2.5h).
   channels:
     linkedin:
       min_hours: 10           # once a day at most. More is suppressed there.
@@ -208,7 +201,6 @@ markets:
     # youtube and tiktok are not news-shaped and are deliberately absent. A
     # channel with no entry here never posts from Markets.
 
-full_load: 5
 phases:
   tease:
     from: -1

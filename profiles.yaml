@@ -211,9 +211,6 @@ profiles:
         data volume and measurement precision are sayable, attributed to the
         study they came from.
     zernio:
-      # profile_id is not read by anything in this desk. Left here only because
-      # the band's copy has it.
-      profile_id: TODO
       api_key_env: ZERNIO_API_KEY
       # From `python3 push_zernio.py accounts` on Guavy's own key, 23 Sep 2026.
       # Only these two are connected. facebook, youtube, tiktok and x have no

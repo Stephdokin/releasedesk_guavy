@@ -1,7 +1,10 @@
 # The thing being promoted. One directory per campaign.
 slug: guavy
-title: TODO
-release_date: TODO        # the day the world is told, YYYY-MM-DD
+title: Guavy
+# release: YYYY-MM-DD   the day the world is told. Read by app.py as
+# `release`, to label a post's phase. Absent until there is a real date: a
+# placeholder string here breaks the date arithmetic, while a missing key
+# reads as an always-on campaign in its taper phase.
 priority: 1
 assets:
   have: []
