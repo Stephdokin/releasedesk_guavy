@@ -11,7 +11,8 @@ and it is explicitly pushed.
 """
 
 import hashlib, json, mimetypes, os, re, shutil, smtplib, socket, sqlite3, \
-       subprocess, sys, tempfile, threading, time, urllib.parse, urllib.request
+       random, subprocess, sys, tempfile, threading, time, urllib.parse, \
+       urllib.request
 from email.message import EmailMessage
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -3380,7 +3381,7 @@ def _compose_one(con, cfg, profile, chan, media, copy, asset, label, title,
 #   the channel is due        min_hours since its last, under per_day, awake
 #   a story clears the bar    the picker can and does refuse
 #
-# Defaults for a post nobody is watching. The theme alternates so a feed does
+# Defaults for a post nobody is watching. The theme is mixed so a feed does
 # not become a wall of one ground.
 # Per theme. The light ground is pale enough that white lettering needs the
 # medium scrim to read; the dark ground only needs the light one.
@@ -3412,11 +3413,20 @@ def autopost_on():
     return setting("autopost", "0") == "1"
 
 
-def auto_theme(con):
-    """Alternate dark and light, counted off what has already gone out."""
-    n = con.execute("SELECT COUNT(*) FROM posts WHERE campaign='markets'"
-                    ).fetchone()[0]
-    return "light" if n % 2 else "dark"
+def auto_theme(channel):
+    """Dark or light at random, per channel, never three alike in a row.
+
+    It used to alternate on a count of every markets post. Fired across two
+    channels in turn, that gave LinkedIn every light one and Instagram every
+    dark one. Random per post, remembered per channel, mixes both feeds.
+    """
+    key = f"theme.{channel}"
+    recent = [t for t in (setting(key) or "").split(",") if t]
+    pick = random.choice(("dark", "light"))
+    if len(recent) >= 2 and recent[-1] == recent[-2] == pick:
+        pick = "light" if pick == "dark" else "dark"
+    set_setting(key, ",".join((recent + [pick])[-2:]))
+    return pick
 
 
 def channel_due(con, cfg, chan, market, profile, now=None):
@@ -3528,7 +3538,21 @@ def auto_once(market, channel, profile, send=True, at_minutes=None,
     scope = brand_scope(market, sym) or {}
     title = brief.get("title") or ""
     link = guavy.wire_url(market, brief["article_id"])
-    body = re.sub(r"<[^>]+>", " ", brief.get("body") or "").strip()
+    # The words come from the published article the link points to, never
+    # from the brief in the list feed. The two are different texts for one
+    # article id: the brief on the Carney pipeline story said "$4 billion
+    # initially", which the published article never says, and that went out
+    # under a link to a page that contradicted it. No article, no post.
+    try:
+        full = guavy.article(market, brief["article_id"]) or {}
+    except guavy.GuavyError as e:
+        return dict(skipped=f"could not read the published article: {e}"[:200])
+    paras = [re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", p)).strip()
+             for p in re.split(r"</p>\s*<p[^>]*>|<br\s*/?>",
+                               full.get("body") or full.get("content") or "")]
+    body = "\n\n".join(p for p in paras if p)
+    if not body:
+        return dict(skipped="the published article came back empty")
 
     impacted = [c for c in (brief.get("impacted") or []) if isinstance(c, dict)]
     hit = max(impacted, key=lambda c: float(c.get("confidence") or 0),
@@ -3554,7 +3578,7 @@ def auto_once(market, channel, profile, send=True, at_minutes=None,
 
     # Artwork, branded and themed, then the render everything else uses.
     _budget(t0, "the artwork")
-    theme = auto_theme(con)
+    theme = auto_theme(channel)
     try:
         art = _generate_art(profile, title, body, market, sym, theme,
                             ["portrait", "landscape"])
@@ -3923,16 +3947,20 @@ def market_article(market):
             return jsonify(error="Nothing new on the Wire above the clout "
                                  "floor. Try again later, or lower "
                                  "min_clout in channels.yaml."), 404
-        full = None
+        # The published article, or nothing. The brief in the list feed is a
+        # different text and can carry figures the article does not.
         try:
             full = guavy.article(market, brief["article_id"])
-        except guavy.GuavyError:
-            full = None          # the brief alone is enough to write from
+        except guavy.GuavyError as e:
+            return jsonify(error=f"Could not read the published article: "
+                                 f"{e}"[:300]), 502
     except guavy.GuavyError as e:
         return jsonify(error=str(e)), 502
 
     full = full or {}
-    body = full.get("body") or full.get("content") or brief.get("body") or ""
+    body = full.get("body") or full.get("content") or ""
+    if not body.strip():
+        return jsonify(error="The published article came back empty."), 502
     # The API carries no link of its own, so the link is the Wire's own page
     # for this article, which is where a post should point anyway: it is
     # Guavy's write-up, not the outlet's.
