@@ -7914,7 +7914,14 @@ function setRange(){
 function resetRange(){ PFROM=FLOOR; PTO=TODAY(); drawPublished(); }
 const pkey=r=>r.platform+'|'+(r.account||'');
 
-function setPPeriod(p){PPERIOD=p;localStorage.setItem('desk.pperiod',p);drawPublished();}
+/* The timeline is drawn on both Published and Numbers, so its controls redraw
+   whichever of the two is open. Each used to redraw only one of them, which
+   left Day, Week and Month dead on Numbers and the metric dead on Published. */
+function redrawTimeline(){
+  const open=document.querySelector('nav button[aria-selected=true]');
+  if(open&&open.dataset.t==='foll') drawFollowers(); else drawPublished();
+}
+function setPPeriod(p){PPERIOD=p;localStorage.setItem('desk.pperiod',p);redrawTimeline();}
 function togglePF(k){PFILTER.has(k)?PFILTER.delete(k):PFILTER.add(k);drawPublished();}
 function allPF(on){PFILTER=on?new Set((PUB.posts||[]).map(pkey)):new Set();drawPublished();}
 
@@ -8176,7 +8183,7 @@ let PBUCKETS=[], PMETRIC=localStorage.getItem('desk.pmetric')||'posts';
 const METRICS={posts:'Posts', views:'Views', impressions:'Impressions',
   reach:'Reach', likes:'Likes'};
 function setMetric(m){PMETRIC=m;localStorage.setItem('desk.pmetric',m);
-  drawFollowers();}
+  redrawTimeline();}
 
 /* The first sentence, which is usually enough to recognise a post by. */
 function opener(text){
