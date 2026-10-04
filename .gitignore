@@ -11,3 +11,6 @@ __pycache__/
 
 # Backups and scratch
 *.bak
+
+# The desk log when it runs detached
+*.log

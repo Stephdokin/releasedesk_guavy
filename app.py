@@ -3575,6 +3575,20 @@ def auto_once(market, channel, profile, send=True, at_minutes=None,
     scores.append(tail)
 
     copy = f"{label} {mark}: {body}\n\n{link}\n\n" + "\n".join(scores)
+    # The full article does not fit X. The article's own headline does, and
+    # it is still Guavy's published words rather than a model's précis of
+    # them, so a short channel gets the headline, then the scores as room
+    # allows.
+    lim = max_chars(cfg, channel)
+    plat = (((cfg.get("channels") or {}).get(channel) or {}).get("platform")
+            or channel.split("_")[0])
+    if lim and body_length(copy, plat) > lim:
+        for tail in (scores, scores[-1:], []):
+            short = (f"{label} {mark}: {title}\n\n{link}"
+                     + ("\n\n" + "\n".join(tail) if tail else ""))
+            if body_length(short, plat) <= lim:
+                copy = short
+                break
 
     # Artwork, branded and themed, then the render everything else uses.
     _budget(t0, "the artwork")

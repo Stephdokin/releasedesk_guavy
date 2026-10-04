@@ -68,7 +68,7 @@ channels:
     - Fri
     - Sun
     time: '10:00'
-    notes: Not connected yet. Connected last, once the post flow is proven.
+    notes: Connected in Zernio, 3 Oct 2026.
   tiktok:
     prefer_shape: portrait
     label: TikTok
@@ -83,7 +83,9 @@ channels:
     time: '18:00'
     notes: Not connected yet. Connected last, once the post flow is proven.
   x:
-    prefer_shape: landscape
+    prefer_shape: portrait     # same 9:16 as Instagram, 3 Oct 2026. X crops tall
+                               # images in the timeline; the corner text sits
+                               # inside the middle 4:5, so it survives.
     label: X
     zernio_platform: twitter
     accepts:
@@ -101,7 +103,7 @@ channels:
     - Sun
     time: 09:00
     max_chars: 280
-    notes: Not connected yet. Connected last, once the post flow is proven.
+    notes: Connected in Zernio, 3 Oct 2026.
 platforms:
   linkedin:
     label: LinkedIn
@@ -191,8 +193,12 @@ markets:
       per_day: 2
       min_clout: 60
     x:
-      min_hours: 0.85         # about 50 minutes, matching what was run before
-      per_day: 12
+      # 24 a day across the four markets, set 3 Oct 2026: six each, over the
+      # 16 hours outside quiet hours. Spread across markets that is one X
+      # post about every 40 minutes.
+      min_hours: 2.6
+      per_day: 6
+      spread_hours: 0.65
       min_clout: 35
     facebook:
       min_hours: 7
