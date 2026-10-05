@@ -107,7 +107,10 @@ def brief(post, media, profile, channels, campaign_dir, page=None):
     v = profile.get("voice") or {}
     handles = (profile.get("handles") or {}).get(plat) or []
 
-    link_policy = ("the link goes in first_comment, never in the body"
+    link_policy = ("no links at all on this channel, not in the body and "
+                   "not in first_comment; leave first_comment empty"
+                   if ch.get("drop_links")
+                   else "the link goes in first_comment, never in the body"
                    if ch.get("links_in_first_comment")
                    else "a link may go in the body")
     hashtag_policy = ("yes, close the post with them"

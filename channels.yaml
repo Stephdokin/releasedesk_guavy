@@ -27,7 +27,11 @@ channels:
     - Thu
     time: 08:00
     strict_duplicates: true
-    links_in_first_comment: true
+    # No links at all, 5 Oct 2026. LinkedIn holds back posts that send people
+    # off the site, and the link we put in the first comment counted as one,
+    # besides inflating our own comment numbers. The graphic still prints
+    # guavy.com/wire for anyone who wants it.
+    drop_links: true
     notes: Connected in Zernio, 23 Sep 2026.
   instagram:
     prefer_shape: portrait
@@ -193,13 +197,20 @@ markets:
       per_day: 2
       min_clout: 60
     x:
-      # 24 a day across the four markets, set 3 Oct 2026: six each, over the
-      # 16 hours outside quiet hours. Spread across markets that is one X
-      # post about every 40 minutes.
-      min_hours: 2.6
-      per_day: 6
+      # 24 a day, one about every 40 minutes over the 16 hours outside quiet
+      # hours (set 3 Oct 2026). Half of them crypto (5 Oct 2026): 12 crypto,
+      # 4 each for the other three. The next slot goes to whichever market is
+      # furthest behind its share, so crypto alternates with the others
+      # rather than bunching; per_day sets the shares. Simulated over a day:
+      # 24 posts, 12 crypto, never more than two crypto in a row.
+      min_hours: 2
+      per_day: 4
       spread_hours: 0.65
       min_clout: 35
+      markets:
+        crypto:
+          min_hours: 0.65
+          per_day: 12
     facebook:
       min_hours: 7
       per_day: 3
@@ -231,3 +242,25 @@ blackouts:
 - 2026-12-26
 - 2026-12-31
 - 2027-01-01
+
+# ---------------------------------------------------------------- Ads
+#
+# Ads post the picture and the words on it, with the ad's own tracked link
+# (on LinkedIn the link goes in the first comment, which ads keep even though
+# Wire posts there carry no link). Set 5 Oct 2026: 8 a day on X, 4 on the
+# others, spaced evenly across the hours outside quiet hours unless a channel
+# sets min_hours. The ad that has gone longest without running on a channel
+# goes next, and none repeats on a channel within repeat_days. An ad keeps
+# clear_minutes from any Wire post on the same account.
+ads:
+  repeat_days: 3
+  clear_minutes: 15
+  channels:
+    x:
+      per_day: 8
+    linkedin:
+      per_day: 4
+    instagram:
+      per_day: 4
+    facebook:
+      per_day: 4              # not connected yet; waits until it is

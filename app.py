@@ -199,6 +199,28 @@ CREATE INDEX IF NOT EXISTS idx_state ON posts(state);
 
 -- Somewhere to put things. Per profile, like the media itself, and only one
 -- level deep: this is a shelf, not a filing system.
+-- One row per ad. The picture is a media row on the ads shelf; the words are
+-- here, because they are what gets posted, and they come from the ad's own
+-- manifest rather than from anyone writing copy.
+CREATE TABLE IF NOT EXISTS ads (
+  id             INTEGER PRIMARY KEY,
+  profile        TEXT NOT NULL,
+  media_id       INTEGER,
+  property       TEXT,
+  property_name  TEXT,
+  variation      INTEGER,
+  audience       TEXT,
+  headline       TEXT,
+  short_headline TEXT,
+  sub            TEXT,
+  cta            TEXT,
+  url            TEXT,
+  file           TEXT,
+  active         INTEGER NOT NULL DEFAULT 1,
+  added          TEXT,
+  UNIQUE (profile, property, variation)
+);
+
 CREATE TABLE IF NOT EXISTS folders (
   id      INTEGER PRIMARY KEY,
   profile TEXT NOT NULL,
@@ -363,6 +385,10 @@ RENAMED_COLUMNS = [
 
 # Columns added after the first release. Applied in order, once each.
 ADDED_COLUMNS = [
+    # Folders belong to a shelf. The ads tab keeps its own, one per group of
+    # ads, and the media tab never sees them, nor they its.
+    ("folders", "bucket", "ALTER TABLE folders ADD COLUMN bucket TEXT "
+                          "NOT NULL DEFAULT 'library'"),
     # Ads live in the same library as everything else, on their own shelf.
     # A separate table would have meant a second copy of uploads, folders,
     # selection, the views, the compose path and the push path, all to hold
@@ -1337,16 +1363,19 @@ LINK_TRAIL = ".,;:!?)]}>\"'"
 
 
 def split_link(text, ch):
-    """Pull the links out of the body and hand them back for the first comment.
+    """Pull the links out of the body, for the first comment or for nowhere.
 
-    LinkedIn buries a post that carries a link in its body, which is why the
-    three LinkedIn channels are marked `links_in_first_comment` in
-    channels.yaml. The link still goes out, one comment down, where it costs
-    nothing. Any other channel keeps its copy exactly as written.
+    `links_in_first_comment` moves them one comment down. `drop_links` takes
+    them out altogether, which is what LinkedIn has since 5 Oct 2026: it
+    holds back posts that send people off the site, a link in the first
+    comment included, and our own comment was being counted as engagement.
+    The graphic still prints guavy.com/wire. Any other channel keeps its copy
+    exactly as written.
 
     Returns (body, first_comment).
     """
-    if not (ch or {}).get("links_in_first_comment"):
+    ch = ch or {}
+    if not (ch.get("links_in_first_comment") or ch.get("drop_links")):
         return text, ""
     if not LINK_RE.search(text or ""):
         return text, ""
@@ -1367,6 +1396,8 @@ def split_link(text, ch):
         # The copy was the link and little else. An all-but-empty post with the
         # link underneath is worse than the reach penalty, so leave it alone.
         return text, ""
+    if ch.get("drop_links"):
+        return body, ""
     # Same link twice in the copy is still one comment.
     return body, "\n".join(dict.fromkeys(urls))
 
@@ -3007,8 +3038,9 @@ def api_markets():
         if accounts.get(chan) in (None, "", "TODO"):
             return dict(last=None, hours_since=None, ready_at=None,
                         used_today=0, blocked="not connected")
-        gap = float(v.get("min_hours") or 0)
-        cap = int(v.get("per_day") or 0)
+        mine = market_spec(v, market)
+        gap = float(mine.get("min_hours") or 0)
+        cap = int(mine.get("per_day") or 0)
         used = spent.get((chan, market), 0)
         seen = last.get((chan, market))
         hours_since, ready_at = None, None
@@ -3049,7 +3081,8 @@ def api_markets():
         # The All row is the sum of the allowances, not one of them.
         out.append(dict(
             channel=chan, per_market=per, **v,
-            total=dict(per_day=int(v.get("per_day") or 0) * len(keys),
+            total=dict(per_day=sum(int(market_spec(v, m).get("per_day") or 0)
+                                   for m in keys),
                        used_today=sum(p["used_today"] for p in per.values()),
                        free_markets=len(free), markets=len(keys),
                        blocked=("" if free else
@@ -3198,6 +3231,23 @@ def wire_loop():
                         got = wire_sync()
                     body = got[0] if isinstance(got, tuple) else got
                     app.logger.info("wire sync: %s", body.get_json())
+            # The auto-made pictures clean-up, once a day.
+            with app.app_context():
+                if setting("cleanup.last") != date.today().isoformat():
+                    out = clean_auto_media(db())
+                    set_setting("cleanup.last", date.today().isoformat())
+                    app.logger.info("media cleanup: %s", out)
+            # A follower reading once a day, whoever opens the Numbers tab.
+            # The count was only recorded when someone looked, which left
+            # holes in the history a chart of it has to step over.
+            if os.environ.get("ZERNIO_API_KEY"):
+                with app.app_context():
+                    have = db().execute(
+                        "SELECT 1 FROM followers WHERE day=? LIMIT 1",
+                        (date.today().isoformat(),)).fetchone()
+                if not have:
+                    with app.test_request_context(query_string={"fresh": "1"}):
+                        followers()
         except Exception as e:                       # never let the loop die
             try:
                 app.logger.warning("wire sync loop: %s", e)
@@ -3318,17 +3368,24 @@ def _render_one(row, text, **opts):
 
 
 def _compose_one(con, cfg, profile, chan, media, copy, asset, label, title,
-                 send=True, at_minutes=None):
-    """Create the post row and hand it to Zernio. Returns the post id."""
+                 send=True, at_minutes=None, campaign="markets",
+                 links_to_comment=False):
+    """Create the post row and hand it to Zernio. Returns the post id.
+
+    `links_to_comment` puts the link in the first comment on a channel that
+    otherwise drops links, which is how ads keep their tracked link on
+    LinkedIn while Wire posts there carry none.
+    """
     import push_zernio as _pz
     ch = (cfg.get("channels") or {}).get(chan) or {}
     plat = ch.get("platform") or chan.split("_")[0]
     mine = for_channel(media, ch.get("prefer_shape"))
     head = mine[0] if mine else media[0]
 
-    text, first = copy, ""
-    if ch.get("links_in_first_comment"):
-        text, first = split_link(text, ch)
+    rule = ch
+    if links_to_comment and (ch.get("drop_links") or ch.get("links_in_first_comment")):
+        rule = dict(ch, drop_links=False, links_in_first_comment=True)
+    text, first = split_link(copy, rule)
 
     lim = max_chars(cfg, chan)
     if lim and body_length(text, plat) > lim:
@@ -3346,17 +3403,18 @@ def _compose_one(con, cfg, profile, chan, media, copy, asset, label, title,
     if not row:
         return None
     prof_data = profiles().get(profile) or {}
-    tags_h = hashtags_for(prof_data, plat, asset)
+    tags_h = hashtags_for(prof_data, plat,
+                          asset if campaign == "markets" else None)
     # campaign='markets' is what every gate keys on: the cadence, the daily
     # cap, the pacing table and the never-twice list all filter on it. A slot
     # made for another campaign arrives as that campaign, and left
     # that way the autoposter cannot see its own work and never stops.
     con.execute("""UPDATE posts SET media_id=?, media_ids=?, copy=?,
                    first_comment=?, title=?, hashtags=?, asset=?,
-                   asset_label=?, campaign='markets',
+                   asset_label=?, campaign=?,
                    state='approved', updated=? WHERE id=?""",
                 (head["id"], json.dumps([m["id"] for m in mine]), text,
-                 first, title[:200], json.dumps(tags_h), asset, label,
+                 first, title[:200], json.dumps(tags_h), asset, label, campaign,
                  datetime.now().isoformat(timespec="seconds"), row["id"]))
     con.commit()
 
@@ -3383,9 +3441,10 @@ def _compose_one(con, cfg, profile, chan, media, copy, asset, label, title,
 #
 # Defaults for a post nobody is watching. The theme is mixed so a feed does
 # not become a wall of one ground.
-# Per theme. The light ground is pale enough that white lettering needs the
-# medium scrim to read; the dark ground only needs the light one.
-AUTO_SCRIM = {"dark": os.environ.get("AUTO_SCRIM_DARK", "light"),
+# Per theme, both medium since 5 Oct 2026. The light ground needed it for
+# white lettering to read, and the dark graphics now match it. Kept per theme
+# so the two can be set apart again from .env.
+AUTO_SCRIM = {"dark": os.environ.get("AUTO_SCRIM_DARK", "medium"),
               "light": os.environ.get("AUTO_SCRIM_LIGHT", "medium")}
 AUTO_TEXT_PCT = float(os.environ.get("AUTO_TEXT_PCT", "8.0"))
 AUTO_WEIGHT = os.environ.get("AUTO_WEIGHT", "Bold")
@@ -3450,12 +3509,13 @@ def channel_due(con, cfg, chan, market, profile, now=None):
             return False, "quiet hours"
 
     today = now.date().isoformat()
+    mine = market_spec(spec, market)
     used = con.execute(
         """SELECT COUNT(*) FROM posts WHERE campaign='markets' AND profile=?
            AND channel=? AND date=? AND asset LIKE ?""",
         (profile, chan, today, f"{market}:%")).fetchone()[0]
-    if used >= int(spec.get("per_day") or 0):
-        return False, f"{used} posted today, cap is {spec.get('per_day')}"
+    if used >= int(mine.get("per_day") or 0):
+        return False, f"{used} posted today, cap is {mine.get('per_day')}"
 
     last = con.execute(
         """SELECT MAX(updated) t FROM posts WHERE campaign='markets'
@@ -3464,9 +3524,9 @@ def channel_due(con, cfg, chan, market, profile, now=None):
     if last:
         try:
             gap = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 3600
-            if gap < float(spec.get("min_hours") or 0):
+            if gap < float(mine.get("min_hours") or 0):
                 return False, (f"{gap:.1f}h since the last, needs "
-                               f"{spec.get('min_hours')}h")
+                               f"{mine.get('min_hours')}h")
         except ValueError:
             pass
 
@@ -3487,6 +3547,43 @@ def channel_due(con, cfg, chan, market, profile, now=None):
         except ValueError:
             pass
     return True, ""
+
+
+def market_spec(spec, market):
+    """A channel's pacing as one market sees it.
+
+    Every market carries the channel's allowance unless the channel gives it
+    its own under `markets:`, which is how X runs half crypto: crypto gets a
+    bigger daily cap and a shorter gap, the others a smaller cap and a longer
+    one, and the channel-wide spacing still sets the overall rhythm.
+    """
+    return {**spec, **(((spec or {}).get("markets") or {}).get(market) or {})}
+
+
+def market_order(con, cfg, chan, profile, markets):
+    """Which market should take this channel's next slot, best first.
+
+    The one furthest behind its share of the day goes first: a market's share
+    is its daily cap over the channel's total, and its deficit is what that
+    share says it should have posted by now less what it has. Ties go to the
+    market that has waited longest. Plain "longest waiting first" let crypto
+    on X fall behind all day and then post in a run at the end of it; this
+    interleaves, so a half-crypto channel alternates, with never more than
+    two crypto in a row.
+    """
+    spec = (cfg.get("channels") or {}).get(chan) or {}
+    tz = channels_cfg().get("timezone")
+    today = datetime.now(ZoneInfo(tz) if (ZoneInfo and tz) else None).date().isoformat()
+    caps = {m: int(market_spec(spec, m).get("per_day") or 0) for m in markets}
+    total = sum(caps.values()) or 1
+    used = {m: con.execute(
+        """SELECT COUNT(*) FROM posts WHERE campaign='markets' AND profile=?
+           AND channel=? AND date=? AND asset LIKE ?""",
+        (profile, chan, today, f"{m}:%")).fetchone()[0] for m in markets}
+    n = sum(used.values())
+    return sorted(markets, key=lambda m: (
+        -(caps[m] / total * (n + 1) - used[m]),
+        market_last(con, profile, chan, m)))
 
 
 def spread_hours(cfg, spec):
@@ -3697,16 +3794,17 @@ def auto_loop():
                     continue
                 con, cfg = db(), markets_cfg()
                 prof = next(iter(profiles()), "")
-                # Every channel, and on each the market that has waited
-                # longest goes first. Walking the markets in a fixed order let
-                # crypto take every slot that opened.
-                pairs = []
-                for chan in (cfg.get("channels") or {}):
-                    for key, _, _ in MARKETS:
-                        if market_mode(key) == "auto":
-                            pairs.append((market_last(con, prof, chan, key),
-                                          key, chan))
-                for _last, key, chan in sorted(pairs):
+                # Every channel, the one that has waited longest first, and on
+                # each the market furthest behind its share of the day.
+                live = [k for k, _, _ in MARKETS if market_mode(k) == "auto"]
+                chans = sorted((cfg.get("channels") or {}), key=lambda c: con.execute(
+                    """SELECT COALESCE(MAX(updated), '') FROM posts WHERE
+                       campaign='markets' AND profile=? AND channel=?""",
+                    (prof, c)).fetchone()[0])
+                pairs = [(key, chan) for chan in chans
+                         for key in market_order(con, cfg, chan, prof, live)]
+                done = False
+                for key, chan in pairs:
                     ok, _why = channel_due(con, cfg, chan, key, prof)
                     if not ok:
                         continue
@@ -3720,7 +3818,30 @@ def auto_loop():
                         app.logger.warning("autopost failed: %s", e)
                     finally:
                         _FIRING.release()
+                    done = True
                     break
+                # Ads, when the Wire had nothing to send this look. One post
+                # per look either way, so the two never land together.
+                if not done and ads_mode() == "auto":
+                    achans = sorted((ads_cfg().get("channels") or {}),
+                                    key=lambda c: con.execute(
+                        """SELECT COALESCE(MAX(updated), '') FROM posts WHERE
+                           campaign='ads' AND profile=? AND channel=?""",
+                        (prof, c)).fetchone()[0])
+                    for chan in achans:
+                        ok, _why = ad_due(con, chan, prof)
+                        if not ok:
+                            continue
+                        if not _FIRING.acquire(blocking=False):
+                            break
+                        try:
+                            out = ad_once(chan, prof, send=True)
+                            app.logger.info("ad result: %s", out)
+                        except Exception as e:
+                            app.logger.warning("ad failed: %s", e)
+                        finally:
+                            _FIRING.release()
+                        break
         except Exception as e:                       # never let the loop die
             try:
                 app.logger.warning("autopost loop: %s", e)
@@ -4121,6 +4242,22 @@ def followers():
                    totals=totals, order=order, days=len(hist))
 
 
+def local_iso(stamp):
+    """A Zernio UTC timestamp in the desk's own timezone, offset included.
+
+    The page buckets by the first ten characters, so a post at 18:39 in
+    Edmonton, which is 00:39 UTC, was being counted on the next day.
+    """
+    if not stamp:
+        return stamp
+    tz = channels_cfg().get("timezone")
+    try:
+        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        return (t.astimezone(ZoneInfo(tz)) if (ZoneInfo and tz) else t).isoformat()
+    except ValueError:
+        return stamp
+
+
 @app.get("/api/zernio/published")
 def zernio_published():
     """Everything live, with its engagement. Zernio syncs posts published
@@ -4134,7 +4271,10 @@ def zernio_published():
         fresh = zernio_all("/posts", force)
     except RuntimeError as e:
         return jsonify(error=str(e)[:400]), 502
-    have = {p.get("_id") for p in raw}
+    # An analytics row has its own _id; the post it measures is latePostId.
+    # Matching on _id never matched, so every measured post came back a second
+    # time from /posts as an unmeasured "awaiting" copy, doubling every count.
+    have = {p.get("latePostId") or p.get("_id") for p in raw}
     for p in fresh:
         if p.get("_id") in have:
             continue
@@ -4176,7 +4316,7 @@ def zernio_published():
                 aid = aid or acct
             who = who or x.get("accountUsername") or x.get("accountName") or ""
         by_account = (owner.get(aid) or {}).get("slug")
-        from_desk = origin.get(p.get("_id"))
+        from_desk = origin.get(p.get("latePostId") or p.get("_id"))
         slug = from_desk or by_account
         if only and slug != only:
             continue
@@ -4186,7 +4326,7 @@ def zernio_published():
             account=who, profile=slug, account_id=aid,
             owned=(slug == only) if only else True,
             attributed="desk" if from_desk else "account",
-            when=p.get("publishedAt") or p.get("scheduledFor"),
+            when=local_iso(p.get("publishedAt") or p.get("scheduledFor")),
             content=p.get("content") or "", url=p.get("platformPostUrl") or "",
             thumb=p.get("thumbnailUrl") or "",
             external=bool(p.get("isExternal")),
@@ -4812,14 +4952,16 @@ def media_raw(mid):
 def folder_list():
     """The folders on one profile, with how much is in each."""
     prof = request.args.get("profile") or ""
+    bucket = request.args.get("bucket") or "library"
     rows = db().execute(
         """SELECT f.id, f.name, COUNT(m.id) AS n FROM folders f
            LEFT JOIN media m ON m.folder_id = f.id
-           WHERE f.profile=? GROUP BY f.id ORDER BY f.name COLLATE NOCASE""",
-        (prof,)).fetchall()
+           WHERE f.profile=? AND f.bucket=? GROUP BY f.id
+           ORDER BY f.name COLLATE NOCASE""",
+        (prof, bucket)).fetchall()
     loose = db().execute(
-        "SELECT COUNT(*) FROM media WHERE profile=? AND folder_id IS NULL",
-        (prof,)).fetchone()[0]
+        """SELECT COUNT(*) FROM media WHERE profile=? AND folder_id IS NULL
+           AND bucket=?""", (prof, bucket)).fetchone()[0]
     return jsonify(folders=[dict(r) for r in rows], loose=loose)
 
 
@@ -4828,6 +4970,7 @@ def folder_add():
     b = request.get_json(force=True)
     name = (b.get("name") or "").strip()
     prof = b.get("profile") or ""
+    bucket = b.get("bucket") or "library"
     if not name:
         return jsonify(error="Give it a name."), 400
     if not prof:
@@ -4835,10 +4978,14 @@ def folder_add():
     con = db()
     have = con.execute("SELECT * FROM folders WHERE profile=? AND name=?",
                        (prof, name)).fetchone()
+    if have and have["bucket"] != bucket:
+        return jsonify(error=f"There is already a folder called {name} on the "
+                             f"{'Ads' if have['bucket'] == 'ads' else 'Media'} "
+                             f"tab."), 409
     if have:
         return jsonify(dict(have))            # naming it twice is not an error
-    con.execute("INSERT INTO folders (profile,name,created) VALUES (?,?,?)",
-                (prof, name, datetime.now().isoformat(timespec="seconds")))
+    con.execute("INSERT INTO folders (profile,name,created,bucket) VALUES (?,?,?,?)",
+                (prof, name, datetime.now().isoformat(timespec="seconds"), bucket))
     con.commit()
     return jsonify(dict(con.execute("SELECT * FROM folders WHERE profile=? AND name=?",
                                     (prof, name)).fetchone()))
@@ -4942,6 +5089,480 @@ def media_del(mid):
     return jsonify(deleted=mid)
 
 
+# ---------------------------------------------------------------- ads
+#
+# Ads are posted as they were made: the picture and the words on it, with the
+# ad's own tracked link. Nothing is written here. The words come from the
+# manifest the ads were built with (guavy-ads.json), so what the post says is
+# exactly what the ad says, and the link carries the campaign that made it.
+
+def ads_cfg():
+    return channels_cfg().get("ads") or {}
+
+
+def ads_mode():
+    return setting("ads.mode", "manual")
+
+
+def ad_spacing(spec, cfg):
+    """Hours between two ads on one channel: set, or the waking day shared out."""
+    if spec.get("min_hours") is not None:
+        return float(spec["min_hours"])
+    quiet = cfg.get("quiet_hours") or markets_cfg().get("quiet_hours") or [23, 7]
+    a, b = int(quiet[0]), int(quiet[1])
+    awake = (a - b) % 24 or 24
+    return round(awake / max(int(spec.get("per_day") or 1), 1), 2)
+
+
+def ad_key(ad):
+    """What an ad is called in the post record: its group and variation.
+
+    Not its row id. A new zip rebuilds every row, and keying history on the
+    id would forget what ran yesterday, so an ad could repeat the next
+    morning. Brand v2 is Brand v2 across uploads.
+    """
+    return f"ad:{ad['property']}:{ad['variation']}"
+
+
+def _ad_row(con, ad):
+    d = dict(ad)
+    d["media"] = (dict(con.execute("SELECT * FROM media WHERE id=?",
+                                   (ad["media_id"],)).fetchone() or {})
+                  if ad["media_id"] else None)
+    return d
+
+
+def ad_copy(ad, plat, limit=None, link_below=False):
+    """The ad's own words, in the order the ad reads, with its link last.
+
+    A channel too short for all of it drops the sub-line first; the headline,
+    the call to action and the link are the ad.
+    """
+    head = (ad.get("headline") or "").strip()
+    sub = (ad.get("sub") or "").strip()
+    cta = (ad.get("cta") or "").strip()
+    url = (ad.get("url") or "").strip()
+    tail = f"{cta}: {url}" if cta else url
+    if link_below and url:
+        # The link is lifted into the first comment, so the line it leaves
+        # behind has to say where it went rather than end on a colon.
+        tail = (f"{cta}: link in the first comment" if cta
+                else "Link in the first comment") + f"\n{url}"
+    for parts in ((head, sub, tail), (head, tail),
+                  ((ad.get("short_headline") or head).strip(), tail)):
+        text = "\n\n".join(x for x in parts if x)
+        if not limit or body_length(text, plat) <= limit:
+            return text
+    return None
+
+
+def ad_due(con, chan, profile, now=None):
+    """Whether an ad may go to this channel now, and why not."""
+    cfg = ads_cfg()
+    spec = ((cfg.get("channels") or {}).get(chan)) or {}
+    if not spec:
+        return False, "no ad pacing for this channel"
+    z = ((profiles().get(profile) or {}).get("zernio") or {}).get("accounts") or {}
+    if z.get(chan) in (None, "", "TODO"):
+        return False, "not connected"
+    tz = channels_cfg().get("timezone")
+    now = now or datetime.now(ZoneInfo(tz) if (ZoneInfo and tz) else None)
+    quiet = cfg.get("quiet_hours") or markets_cfg().get("quiet_hours") or []
+    if len(quiet) == 2:
+        a, b = int(quiet[0]), int(quiet[1])
+        if (a <= now.hour or now.hour < b) if a > b else (a <= now.hour < b):
+            return False, "quiet hours"
+    used = con.execute(
+        """SELECT COUNT(*) FROM posts WHERE campaign='ads' AND profile=?
+           AND channel=? AND date=? AND state != 'rejected'""",
+        (profile, chan, now.date().isoformat())).fetchone()[0]
+    if used >= int(spec.get("per_day") or 0):
+        return False, f"daily cap reached ({used})"
+    gap = ad_spacing(spec, cfg)
+
+    def since(sql, args):
+        t = con.execute(sql, args).fetchone()[0]
+        if not t:
+            return None
+        try:
+            return (datetime.now() - datetime.fromisoformat(t)).total_seconds() / 3600
+        except ValueError:
+            return None
+    h = since("""SELECT MAX(updated) FROM posts WHERE campaign='ads' AND
+                 profile=? AND channel=? AND state != 'rejected'""", (profile, chan))
+    if h is not None and h < gap:
+        return False, f"spacing, {gap:g}h between ads"
+    # Clear of anything else on the account, so an ad never lands on top of a
+    # Wire post and reads as one double post.
+    clear = float(cfg.get("clear_minutes") or 15) / 60
+    h = since("""SELECT MAX(updated) FROM posts WHERE campaign != 'ads' AND
+                 profile=? AND channel=? AND state IN ('scheduled','published',
+                 'approved')""", (profile, chan))
+    if h is not None and h < clear:
+        return False, "too close to a Wire post"
+    return True, ""
+
+
+def pick_ad(con, chan, profile, exclude=()):
+    """The active ad that has gone longest without running on this channel.
+
+    Never one that ran there within `repeat_days`. Ties, which is every ad
+    that has never run, are broken at random so a new batch does not go out
+    in the order it was imported.
+    """
+    days = float(ads_cfg().get("repeat_days") or 3)
+    cut = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = con.execute(
+        """SELECT a.*, (SELECT MAX(p.updated) FROM posts p WHERE p.campaign='ads'
+             AND p.channel=? AND p.asset='ad:'||a.property||':'||a.variation AND p.state != 'rejected')
+             AS last_here
+           FROM ads a WHERE a.profile=? AND a.active=1 AND a.media_id IS NOT NULL""",
+        (chan, profile)).fetchall()
+    ok = [r for r in rows if r["id"] not in exclude
+          and (not r["last_here"] or r["last_here"] < cut)]
+    if not ok:
+        return None
+    random.shuffle(ok)
+    ok.sort(key=lambda r: r["last_here"] or "")
+    return ok[0]
+
+
+def ad_once(chan, profile, send=True, at_minutes=None, ad_id=None):
+    """Post one ad to one channel."""
+    con, cfg = db(), channels_cfg()
+    ch = (cfg.get("channels") or {}).get(chan) or {}
+    plat = ch.get("platform") or chan.split("_")[0]
+    if ad_id:
+        ad = con.execute("SELECT * FROM ads WHERE id=? AND profile=?",
+                         (int(ad_id), profile)).fetchone()
+    else:
+        ad = pick_ad(con, chan, profile)
+    if not ad:
+        return dict(skipped="no ad is free to run on this channel")
+    media = con.execute("SELECT * FROM media WHERE id=?",
+                        (ad["media_id"],)).fetchone()
+    if not media:
+        return dict(skipped=f"ad {ad['id']} has no picture")
+    below = bool(ch.get("drop_links") or ch.get("links_in_first_comment"))
+    copy = ad_copy(dict(ad), plat, max_chars(cfg, chan), link_below=below)
+    if not copy:
+        return dict(skipped=f"ad {ad['id']} does not fit {plat}")
+    made = _compose_one(con, cfg, profile, chan, [dict(media)], copy,
+                        ad_key(ad), ad["property_name"] or "Ad",
+                        ad["headline"] or "", send=send, at_minutes=at_minutes,
+                        campaign="ads", links_to_comment=True)
+    if not made:
+        return dict(skipped="no slot free on that channel")
+    return dict(posted=made, sent=bool(send), ad=ad["id"],
+                headline=ad["headline"], channel=chan)
+
+
+@app.get("/api/ads")
+def ads_list():
+    """Every ad on a profile, with where and when each has run."""
+    prof = request.args.get("profile") or ""
+    con = db()
+    out = []
+    for a in con.execute("SELECT * FROM ads WHERE profile=? ORDER BY property, "
+                         "variation", (prof,)):
+        d = _ad_row(con, a)
+        runs = con.execute(
+            """SELECT channel, COUNT(*) n, MAX(updated) last FROM posts
+               WHERE campaign='ads' AND asset=? AND state != 'rejected'
+               GROUP BY channel""", (ad_key(a),)).fetchall()
+        d["runs"] = {r["channel"]: dict(n=r["n"], last=r["last"]) for r in runs}
+        out.append(d)
+    return jsonify(ads=out, mode=ads_mode())
+
+
+@app.post("/api/ads/import")
+def ads_import():
+    """Replace every ad with the set in one upload.
+
+    The upload is a .zip of the ads folder: guavy-ads.json and the pictures in
+    their group folders. A loose folder or a .json with its pictures works the
+    same way. Nothing is touched until the upload has been read and found to
+    hold a manifest; then the old ads, their pictures and their folders go,
+    and the new set is built in their place. History survives, because it is
+    kept by group and variation rather than by row: Brand v2 that ran
+    yesterday is still Brand v2 today. A picture a waiting post still needs
+    is kept.
+    """
+    import zipfile, io
+    prof = request.form.get("profile") or ""
+    if prof not in profiles():
+        return jsonify(error="Choose a profile first."), 400
+    manifest, pics = None, {}
+
+    def take(name, read):
+        nonlocal manifest
+        base = Path(name).name
+        if not base or base.startswith(".") or "__MACOSX" in name:
+            return
+        if base.lower().endswith(".json"):
+            try:
+                manifest = json.loads(read().decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                raise ValueError(f"{base} is not readable JSON: {e}")
+        elif base.lower().rsplit(".", 1)[-1] in ("png", "jpg", "jpeg", "webp"):
+            pics[base] = read()
+
+    try:
+        for f in request.files.getlist("files"):
+            if (f.filename or "").lower().endswith(".zip"):
+                try:
+                    z = zipfile.ZipFile(io.BytesIO(f.read()))
+                except zipfile.BadZipFile:
+                    return jsonify(error=f"{f.filename} is not a readable zip."), 400
+                for info in z.infolist():
+                    if not info.is_dir():
+                        take(info.filename, lambda i=info: z.read(i))
+            else:
+                take(f.filename or "", f.read)
+    except ValueError as e:
+        return jsonify(error=str(e)[:300]), 400
+    if manifest is None:
+        return jsonify(error="No ads manifest (guavy-ads.json) in that upload. "
+                             "Nothing was changed."), 400
+    items = manifest if isinstance(manifest, list) else (
+        next((v for v in manifest.values() if isinstance(v, list)), []))
+    if not items:
+        return jsonify(error="The manifest lists no ads. Nothing was changed."), 400
+
+    con = db()
+    today = date.today().isoformat()
+    # Pictures a post that has not gone out yet still points at.
+    keep = set()
+    for r in con.execute("""SELECT media_id, media_ids FROM posts WHERE state IN
+                            ('allocated','drafted','approved') OR (state='scheduled'
+                            AND date >= ?)""", (today,)):
+        if r["media_id"]:
+            keep.add(r["media_id"])
+        try:
+            keep.update(json.loads(r["media_ids"] or "[]"))
+        except ValueError:
+            pass
+    old = con.execute("SELECT COUNT(*) FROM ads WHERE profile=?", (prof,)).fetchone()[0]
+    removed = 0
+    for m in con.execute("SELECT id, path FROM media WHERE profile=? AND bucket='ads'",
+                         (prof,)).fetchall():
+        if m["id"] in keep:
+            con.execute("UPDATE media SET folder_id=NULL WHERE id=?", (m["id"],))
+            continue
+        (MEDIA / m["path"]).unlink(missing_ok=True)
+        con.execute("UPDATE posts SET media_id=NULL WHERE media_id=?", (m["id"],))
+        con.execute("DELETE FROM media WHERE id=?", (m["id"],))
+        removed += 1
+    con.execute("DELETE FROM ads WHERE profile=?", (prof,))
+    con.execute("DELETE FROM folders WHERE profile=? AND bucket='ads'", (prof,))
+    con.commit()
+
+    made, missing = 0, []
+    for it in items:
+        sizes = it.get("sizes") or []
+        rel = (sizes[0] or {}).get("file") if sizes else ""
+        blob = pics.get(Path(rel or "").name)
+        group = it.get("propertyName") or it.get("property") or "Ads"
+        mid = None
+        if blob:
+            row = _keep_image(con, prof, blob,
+                              mimetypes.guess_type(rel)[0] or "image/png", None,
+                              Path(rel).stem, it.get("headline"), "ad")
+            if row:
+                mid = row["id"]
+                con.execute("UPDATE media SET bucket='ads', folder_id=?, original=? "
+                            "WHERE id=?", (_ads_folder(con, prof, group),
+                                           Path(rel).name, mid))
+        else:
+            missing.append(rel or f"{group} v{it.get('variation')}")
+        con.execute(
+            """INSERT INTO ads (profile, property, variation, added, media_id,
+               property_name, audience, headline, short_headline, sub, cta, url,
+               file) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (prof, it.get("property"), it.get("variation"),
+             datetime.now().isoformat(timespec="seconds"), mid, group,
+             it.get("audience"), it.get("headline"), it.get("shortHeadline"),
+             it.get("sub"), it.get("cta"),
+             it.get("propertyUtm") or it.get("propertyUrl"), rel))
+        made += 1
+    con.commit()
+    return jsonify(replaced=old, added=made, missing=missing,
+                   pictures_removed=removed, total=len(items))
+
+
+def _ads_folder(con, prof, name):
+    """The ads-shelf folder for one group of ads, made on first use."""
+    row = con.execute("SELECT * FROM folders WHERE profile=? AND name=?",
+                      (prof, name)).fetchone()
+    if row and row["bucket"] == "ads":
+        return row["id"]
+    if row:                       # a Media folder has the name; keep them apart
+        name = f"{name} ads"
+        row = con.execute("SELECT * FROM folders WHERE profile=? AND name=?",
+                          (prof, name)).fetchone()
+        if row:
+            return row["id"]
+    con.execute("INSERT INTO folders (profile,name,created,bucket) VALUES (?,?,?,'ads')",
+                (prof, name, datetime.now().isoformat(timespec="seconds")))
+    return con.execute("SELECT id FROM folders WHERE profile=? AND name=?",
+                       (prof, name)).fetchone()[0]
+
+
+@app.patch("/api/ads/<int:aid>")
+def ad_edit(aid):
+    b = request.get_json(force=True)
+    fields = {k: b[k] for k in ("active", "headline", "sub", "cta", "url",
+                                "short_headline") if k in b}
+    if "active" in fields:
+        fields["active"] = 1 if fields["active"] else 0
+    if not fields:
+        return jsonify(error="nothing to change"), 400
+    con = db()
+    con.execute("UPDATE ads SET " + ", ".join(f"{k}=?" for k in fields)
+                + " WHERE id=?", (*fields.values(), aid))
+    con.commit()
+    return jsonify(dict(con.execute("SELECT * FROM ads WHERE id=?", (aid,)).fetchone()))
+
+
+@app.delete("/api/ads/<int:aid>")
+def ad_delete(aid):
+    """Take an ad off the list. Its picture stays in the library, and what it
+    already posted stays in the record."""
+    con = db()
+    con.execute("DELETE FROM ads WHERE id=?", (aid,))
+    con.commit()
+    return jsonify(deleted=aid)
+
+
+@app.post("/api/ads/mode")
+def ads_mode_set():
+    b = request.get_json(silent=True) or {}
+    mode = b.get("mode")
+    if mode not in ("auto", "manual"):
+        return jsonify(error="auto or manual"), 400
+    if mode == "auto" and not is_live():
+        return jsonify(error="The desk is not Live, so nothing would reach "
+                             "Zernio. Arm it first."), 400
+    set_setting("ads.mode", mode)
+    return jsonify(mode=mode)
+
+
+@app.get("/api/ads/pacing")
+def ads_pacing():
+    """The ads pacing table: per channel, the allowance and where it stands."""
+    prof = request.args.get("profile") or ""
+    con, cfg = db(), ads_cfg()
+    tz = channels_cfg().get("timezone")
+    now = datetime.now(ZoneInfo(tz) if (ZoneInfo and tz) else None)
+    out = []
+    for chan, spec in (cfg.get("channels") or {}).items():
+        ok, why = ad_due(con, chan, prof, now)
+        used = con.execute(
+            """SELECT COUNT(*) FROM posts WHERE campaign='ads' AND profile=?
+               AND channel=? AND date=? AND state != 'rejected'""",
+            (prof, chan, now.date().isoformat())).fetchone()[0]
+        last = con.execute(
+            """SELECT p.updated, a.headline FROM posts p LEFT JOIN ads a
+               ON p.asset='ad:'||a.property||':'||a.variation WHERE p.campaign='ads' AND p.profile=?
+               AND p.channel=? AND p.state != 'rejected'
+               ORDER BY p.updated DESC LIMIT 1""", (prof, chan)).fetchone()
+        gap = ad_spacing(spec, cfg)
+        nxt = None
+        if last and last["updated"]:
+            try:
+                nxt = (datetime.fromisoformat(last["updated"])
+                       + timedelta(hours=gap)).strftime("%H:%M")
+            except ValueError:
+                pass
+        out.append(dict(channel=chan, per_day=int(spec.get("per_day") or 0),
+                        spacing=gap, used_today=used, due=ok, blocked=why,
+                        last=last["updated"] if last else None,
+                        last_headline=last["headline"] if last else None,
+                        next_at=nxt))
+    return jsonify(channels=out, mode=ads_mode(),
+                   repeat_days=float(cfg.get("repeat_days") or 3),
+                   quiet_hours=cfg.get("quiet_hours")
+                   or markets_cfg().get("quiet_hours") or [])
+
+
+@app.post("/api/ads/fire")
+def ads_fire():
+    """Post one ad now, to one channel: the next in rotation, or a chosen one."""
+    b = request.get_json(silent=True) or {}
+    prof, chan = b.get("profile") or "", b.get("channel")
+    if not chan:
+        return jsonify(error="Which channel?"), 400
+    if not b.get("force"):
+        ok, why = ad_due(db(), chan, prof)
+        if not ok:
+            return jsonify(error=f"Not due: {why}"), 409
+    if not _FIRING.acquire(blocking=False):
+        return jsonify(error="Already building a post. One at a time."), 429
+    try:
+        out = ad_once(chan, prof, send=bool(b.get("send")),
+                      at_minutes=b.get("at_minutes"), ad_id=b.get("ad"))
+    finally:
+        _FIRING.release()
+    return jsonify(**out)
+
+
+# ------------------------------------------------------------ media cleanup
+#
+# Every Wire post draws two pictures and renders two more, so the library grew
+# by hundreds of files a week that nobody would open again. Once a post has
+# gone, Zernio holds its own copy, so the desk's is only needed while the post
+# is still waiting to go out.
+
+AUTO_KEEP_DAYS = float(os.environ.get("AUTO_KEEP_DAYS", "7"))
+
+
+def auto_media_to_clean(con, days=AUTO_KEEP_DAYS):
+    """Auto-made pictures older than `days` that no waiting post still needs."""
+    cut = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+    today = date.today().isoformat()
+    keep = set()
+    for r in con.execute(
+            """SELECT media_id, media_ids FROM posts WHERE state IN
+               ('allocated','drafted','approved')
+               OR (state='scheduled' AND date >= ?)""", (today,)):
+        if r["media_id"]:
+            keep.add(r["media_id"])
+        try:
+            keep.update(json.loads(r["media_ids"] or "[]"))
+        except ValueError:
+            pass
+    marks = ",".join("?" * len(AUTO_SOURCES))
+    return [dict(r) for r in con.execute(
+        f"""SELECT id, path, bytes FROM media WHERE source IN ({marks})
+            AND bucket != 'ads' AND added < ?""", (*AUTO_SOURCES, cut))
+            if r["id"] not in keep]
+
+
+def clean_auto_media(con, days=AUTO_KEEP_DAYS):
+    gone = auto_media_to_clean(con, days)
+    for r in gone:
+        (MEDIA / r["path"]).unlink(missing_ok=True)
+        con.execute("UPDATE posts SET media_id=NULL WHERE media_id=?", (r["id"],))
+        con.execute("DELETE FROM media WHERE id=?", (r["id"],))
+    con.commit()
+    return dict(removed=len(gone), mb=round(sum(r["bytes"] or 0 for r in gone) / 1e6, 1))
+
+
+@app.post("/api/media/cleanup")
+def media_cleanup():
+    """What the daily clean-up would remove, or remove it now with run=true."""
+    b = request.get_json(silent=True) or {}
+    con = db()
+    if b.get("run"):
+        out = clean_auto_media(con)
+        set_setting("cleanup.last", date.today().isoformat())
+        return jsonify(**out)
+    gone = auto_media_to_clean(con)
+    return jsonify(would_remove=len(gone), days=AUTO_KEEP_DAYS,
+                   mb=round(sum(r["bytes"] or 0 for r in gone) / 1e6, 1),
+                   last=setting("cleanup.last"))
+
+
 # ---------------------------------------------------------------- page
 
 @app.get("/")
@@ -5020,7 +5641,34 @@ nav .count{color:var(--case);background:var(--ok);border-radius:9px;
 .strip p{margin:0 0 18px;color:var(--dim);font-size:15px;max-width:62ch}
 .strip p.sum{max-width:none}
 .barwrap{overflow-x:auto;padding-bottom:2px}
-.bars{display:flex;align-items:flex-end;gap:2px;height:132px}
+.bars{display:flex;align-items:flex-end;gap:2px;height:132px;position:relative}
+/* Faint horizontal rules at each tick, behind the bars, so heights can be
+   compared across dates. The axis that names them sits to the right. */
+.bars .grid{position:absolute;left:0;right:0;height:0;
+  border-top:1px solid var(--rule);opacity:.55;pointer-events:none;z-index:0}
+.bars .bar{position:relative;z-index:1}
+.chartrow{display:flex;align-items:flex-start;gap:8px}
+/* ---- ads tab ---- */
+.addrop{border:1px dashed var(--rule);padding:18px 20px;margin:0 0 18px;
+  color:var(--dim);font-size:15px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.addrop.over{border-color:var(--brand);color:var(--ink);background:rgba(229,227,220,.04)}
+.adgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.adcard{border:1px solid var(--rule);background:var(--panel);display:flex;flex-direction:column}
+.adcard.off{opacity:.5}
+.adcard img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}
+.adcard .body{padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
+.adcard .grp{font-size:12px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+.adcard .hl{font-weight:600;font-size:15px;line-height:1.3}
+.adcard .sb{font-size:13px;color:var(--dim);line-height:1.4}
+.adcard .cta{font-size:13px}
+.adcard .adlink{color:var(--dim);text-decoration:none;margin-left:4px}
+.adcard .adlink:hover{color:var(--ink);text-decoration:underline}
+.adcard .runs{font-size:12px;color:var(--dim);margin-top:auto}
+.adcard .row{display:flex;align-items:center;gap:8px;font-size:13px}
+.chartrow .barwrap{flex:1;min-width:0}
+.yaxis{position:relative;width:46px;flex:none;height:132px;color:var(--dim);
+  font-size:12px;font-family:'Barlow Condensed',sans-serif;letter-spacing:.02em}
+.yaxis span{position:absolute;left:0;transform:translateY(50%);white-space:nowrap}
 .bar{flex:1;min-width:0;height:100%;display:flex;flex-direction:column-reverse;
   gap:1px;border-radius:1px}
 .bar span{display:block;min-height:2px}
@@ -5665,7 +6313,7 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   if(b.dataset.t==='foll') drawFollowers();
   if(b.dataset.t==='blog') drawBlogs();
   if(b.dataset.t==='mkt') drawMarkets();
-  if(b.dataset.t==='ads') drawUpload('ads');
+  if(b.dataset.t==='ads') drawAds();
   if(b.dataset.t==='up') drawUpload('library');
 });
 
@@ -5817,7 +6465,7 @@ async function load(){
     && WAITING(p)).length;
   const byBucket=b=>MEDIA.filter(m=>(m.bucket||'library')===b).length;
   $('#mc').textContent = byBucket('library');
-  $('#ac').textContent = byBucket('ads');
+  $('#ac').textContent = ADS?ADS.length:byBucket('ads');
   drawUpload(); drawList(); drawCal();
 }
 
@@ -6603,7 +7251,7 @@ function folderBar(){
       ondrop="dropInto(event,${k})"
       >${label} <span class="fn">${n}</span>${extra}</button>`;
   };
-  return chip(null,'All',MEDIA.length)
+  return chip(null,'All',MEDIA.filter(m=>(m.bucket||'library')==='library').length)
     + chip('loose','Loose',LOOSE)
     + FOLDERS.map(f=>chip(f.id,esc(f.name),f.n,
         `<span class="fx" title="Rename"
@@ -7376,6 +8024,166 @@ let MKT=null, ART={}, MKTSYM=null, MKTAB='all', MCOUNT=null, MSYMS={};
    arrive with is "what is happening", not "what was I last looking at". */
 function setMktab(k){MKTAB=k;drawMarkets();}
 
+/* ---- ads ---- */
+/* The ads tab is its own shelf: its own folders (one per group of ads), its
+   own pacing, its own Auto switch. The words that go out are the ad's own,
+   from the manifest it was built with, so nothing is edited here but the
+   on/off switch. */
+let ADS=null, ADPACE=null, ADGROUP=null;
+async function drawAds(force){
+  const el=$('#ads');
+  if(force||!ADS){
+    const [a,p]=await Promise.all([
+      api('/api/ads?profile='+encodeURIComponent(PROF)),
+      api('/api/ads/pacing?profile='+encodeURIComponent(PROF))]);
+    if(a.error||p.error){el.innerHTML=`<div class="empty"><b>${esc(a.error||p.error)}</b></div>`;return;}
+    ADS=a.ads||[]; ADPACE=p;
+    $('#ac').textContent=ADS.length;
+  }
+  const groups=[...new Set(ADS.map(x=>x.property_name||'Ads'))];
+  if(ADGROUP&&!groups.includes(ADGROUP)) ADGROUP=null;
+  const shown=ADS.filter(x=>!ADGROUP||(x.property_name||'Ads')===ADGROUP);
+  const mode=ADPACE.mode||'manual', live=(ADPACE.channels||[]);
+  const plabel=c=>esc((PLAT[c]||{}).label||c);
+  const fmt=t=>t?esc(String(t).replace('T',' ').slice(5,16)):'never';
+  const runs=x=>Object.entries(x.runs||{}).map(([c,r])=>`${plabel(c)} ${r.n}`).join(' · ');
+  const lastRun=x=>{const t=Object.values(x.runs||{}).map(r=>r.last).sort().pop();
+    return t?`last ${fmt(t)}`:'not run yet';};
+
+  el.innerHTML=`
+    <div class="bar2"><h2>Ads</h2><span class="spacer"></span>
+      <span class="sub">${ADS.length} ad${ADS.length===1?'':'s'} ·
+        ${ADS.filter(x=>x.active).length} in rotation</span>
+      <span class="seg">${['manual','auto'].map(k=>`<button class="${mode===k?'on':''}"
+        onclick="setAdMode('${k}')" ${k==='auto'&&!LIVE?'disabled':''}
+        title="${k==='auto'&&!AUTOPOST?'Set, but nothing fires until the Auto switch in the header is on':''}"
+        >${k}</button>`).join('')}</span>
+      <button class="act" onclick="drawAds(true)">Refresh</button></div>
+
+    <div class="addrop" id="addrop">
+      <span>Drop the ads <b>.zip</b> here: <code>guavy-ads.json</code> and the
+        pictures in their folders. It <b>replaces every ad</b> on this tab with
+        the set in the zip. What has already run is remembered by group and
+        variation, so an ad that ran yesterday still waits its turn.</span>
+      <span class="spacer"></span>
+      <label class="act">Upload .zip<input type="file" accept=".zip,application/zip"
+        hidden onchange="adImport([...this.files]);this.value=''"></label>
+    </div>
+
+    <div class="bar2" style="margin-top:4px"><h2 style="font-size:19px">Pacing</h2>
+      <span class="spacer"></span></div>
+    <div class="chars" style="margin:-6px 0 9px">${mode==='auto'
+      ? (AUTOPOST?'Ads are on automatic and will post within the pacing below.'
+         :'<b>Ads are set to Auto, but nothing will fire.</b> Automatic posting is switched off in the header.')
+      : 'Ads are on manual. Nothing posts by itself until this is set to auto.'}
+      The ad that has gone longest without running on a channel goes next;
+      none repeats on a channel within ${ADPACE.repeat_days} days. Quiet hours
+      ${(ADPACE.quiet_hours||[]).join(' to ')||'not set'}. From <code>channels.yaml</code>.</div>
+    <table class="tbl"><thead><tr><th>Channel</th><th>Per day</th><th>Spacing</th>
+      <th>Today</th><th>Last ad</th><th>Free to post</th><th></th></tr></thead>
+      <tbody>${live.map(c=>`<tr>
+        <td>${plabel(c.channel)}</td><td>${c.per_day}</td><td>${c.spacing}h</td>
+        <td>${c.used_today} of ${c.per_day}</td>
+        <td>${c.last?`${fmt(c.last)} <span class="sub">${esc((c.last_headline||'').slice(0,40))}</span>`:'never'}</td>
+        <td>${c.due?'<span class="sub">now</span>'
+          :`<span class="dim warn">${esc(c.blocked)}${c.next_at&&/spacing/.test(c.blocked)?`, ${c.next_at}`:''}</span>`}</td>
+        <td>${c.blocked==='not connected'?'':`<button class="act" onclick="adFire('${c.channel}')"
+          ${LIVE?'':'disabled'}>Post one now</button>`}</td></tr>`).join('')}</tbody></table>
+
+    <div class="folders" style="margin:20px 0 12px">
+      <button class="fold${ADGROUP===null?' on':''}" onclick="setAdGroup(null)">All
+        <span class="fn">${ADS.length}</span></button>
+      ${groups.map(g=>`<button class="fold${ADGROUP===g?' on':''}"
+        onclick="setAdGroup(${esc(JSON.stringify(g))})">${esc(g)}
+        <span class="fn">${ADS.filter(x=>(x.property_name||'Ads')===g).length}</span></button>`).join('')}
+    </div>
+    ${shown.length?`<div class="adgrid">${shown.map(x=>`
+      <div class="adcard${x.active?'':' off'}">
+        ${x.media?`<img src="/media/${x.media.id}/raw" alt="" loading="lazy">`
+          :'<div class="empty" style="aspect-ratio:1/1">No picture</div>'}
+        <div class="body">
+          <div class="grp">${esc(x.property_name||'')} · v${x.variation??''}
+            ${x.audience?` · ${esc(x.audience)}`:''}</div>
+          <div class="hl">${esc(x.headline||'')}</div>
+          ${x.sub?`<div class="sb">${esc(x.sub)}</div>`:''}
+          <div class="cta"><b>${esc(x.cta||'')}</b>
+            ${x.url?`<a class="adlink" href="${esc(x.url)}" target="_blank" rel="noopener"
+              title="${esc(x.url)}">${esc(x.url.replace(/^https?:\/\/(www\.)?/,'').split('?')[0])}
+              &#8599;</a>`:''}</div>
+          <div class="runs">${runs(x)?esc(runs(x))+' · ':''}${lastRun(x)}</div>
+          <div class="row"><label><input type="checkbox" ${x.active?'checked':''}
+            onchange="adActive(${x.id},this.checked)"> In rotation</label></div>
+        </div></div>`).join('')}</div>`
+      :`<div class="empty"><b>No ads yet.</b> Drag the guavy-ads folder onto this tab.</div>`}`;
+  wireAdDrop();
+}
+function setAdGroup(g){ADGROUP=g;drawAds();}
+async function setAdMode(m){
+  const r=await api('/api/ads/mode',{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
+  if(r.error){toast(r.error);return;}
+  toast(m==='auto'?'Ads on automatic':'Ads on manual'); drawAds(true);
+}
+async function adActive(id,on){
+  const r=await api(`/api/ads/${id}`,{method:'PATCH',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({active:on})});
+  if(r.error){toast(r.error);return;}
+  const a=ADS.find(x=>x.id===id); if(a)a.active=on?1:0; drawAds();
+}
+async function adFire(chan){
+  if(!confirm(`Post the next ad in rotation to ${(PLAT[chan]||{}).label||chan} now?`))return;
+  toast('Posting an ad…');
+  const r=await api('/api/ads/fire',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({profile:PROF,channel:chan,send:true,force:true})});
+  toast(r.error||r.skipped||`Sent: ${(r.headline||'').slice(0,50)}`); drawAds(true);
+}
+/* A dropped folder arrives as directory entries, not files, so walk it. */
+async function filesFrom(dt){
+  const out=[], walk=async(entry,path)=>{
+    if(entry.isFile){ await new Promise(res=>entry.file(f=>{
+      out.push(new File([f],path+f.name,{type:f.type})); res();},res)); }
+    else if(entry.isDirectory){
+      const rd=entry.createReader(); let batch;
+      do{ batch=await new Promise(res=>rd.readEntries(res,()=>res([])));
+          for(const e of batch) await walk(e,path+entry.name+'/'); }while(batch.length);
+    }};
+  const items=[...(dt.items||[])].map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(Boolean);
+  if(!items.length) return [...(dt.files||[])];
+  for(const e of items) await walk(e,'');
+  return out;
+}
+function wireAdDrop(){
+  const d=$('#ads'), z=$('#addrop'); if(!d||d._wired)return; d._wired=true;
+  ['dragenter','dragover'].forEach(n=>d.addEventListener(n,e=>{
+    if(![...(e.dataTransfer.types||[])].includes('Files'))return;
+    e.preventDefault(); const zz=$('#addrop'); if(zz)zz.classList.add('over');}));
+  d.addEventListener('dragleave',e=>{ if(e.target===d){const zz=$('#addrop'); if(zz)zz.classList.remove('over');}});
+  d.addEventListener('drop',async e=>{
+    if(![...(e.dataTransfer.types||[])].includes('Files'))return;
+    e.preventDefault(); const zz=$('#addrop'); if(zz)zz.classList.remove('over');
+    adImport(await filesFrom(e.dataTransfer));
+  });
+}
+/* A zip, or a loose folder of the same thing. Either replaces the whole set,
+   so it asks first; the server checks the upload holds a manifest before it
+   removes anything. */
+async function adImport(files){
+  const keep=files.filter(f=>/\.(zip|json|png|jpe?g|webp)$/i.test(f.name));
+  const zip=keep.find(f=>/\.zip$/i.test(f.name));
+  if(!zip&&!keep.some(f=>/\.json$/i.test(f.name))){
+    toast('Drop the ads .zip (it needs guavy-ads.json inside)');return;}
+  const n=(ADS||[]).length;
+  if(n&&!confirm(`Replace all ${n} ads with the set in ${zip?zip.name:'this folder'}?`))return;
+  toast('Reading the ads…');
+  const fd=new FormData(); fd.append('profile',PROF);
+  (zip?[zip]:keep).forEach(f=>fd.append('files',f,f.name));
+  const r=await api('/api/ads/import',{method:'POST',body:fd});
+  if(r.error){toast(r.error);return;}
+  toast(`${r.added} ads loaded`+(r.replaced?`, replacing ${r.replaced}`:'')
+    +(r.missing&&r.missing.length?`. ${r.missing.length} without a picture`:''));
+  ADS=null; ADGROUP=null; await load(); drawAds(true);
+}
+
 async function drawMarkets(force){
   const el=$('#mkt');
   if(MKT===null||force){
@@ -7908,10 +8716,14 @@ let PFILTER=null, FOLL=null, PPERIOD=localStorage.getItem('desk.pperiod')||'week
 let PFROM=null, PTO=null;
 /* The earliest post Zernio holds. Replaced from the data on first load. */
 let FLOOR='2026-06-01';
+/* Where both ranges open. Earlier is still selectable, back to FLOOR, but the
+   months Zernio backfilled before Guavy posted from here are not the story. */
+const START='2026-09-01';
+const dflt=()=>FLOOR>START?FLOOR:START;
 function setRange(){
   PFROM=$('#pfrom').value||FLOOR; PTO=$('#pto').value||TODAY(); drawPublished();
 }
-function resetRange(){ PFROM=FLOOR; PTO=TODAY(); drawPublished(); }
+function resetRange(){ PFROM=dflt(); PTO=TODAY(); drawPublished(); }
 const pkey=r=>r.platform+'|'+(r.account||'');
 
 /* The timeline is drawn on both Published and Numbers, so its controls redraw
@@ -7948,7 +8760,7 @@ async function drawPublished(force){
   }
   const every=(PUB.posts||[]).filter(r=>(r.when||'')>=FLOOR);
   if(PFILTER===null) PFILTER=new Set(every.map(pkey));
-  if(PFROM===null){PFROM=FLOOR;PTO=TODAY();}
+  if(PFROM===null){PFROM=dflt();PTO=TODAY();}
   const inRange=r=>{const d=(r.when||'').slice(0,10);
     return d>=PFROM&&d<=PTO;};
   const rows=every.filter(r=>PFILTER.has(pkey(r))&&inRange(r));
@@ -7991,7 +8803,7 @@ async function drawPublished(force){
         <span class="sub">to</span>
         <input type="date" id="pto" value="${PTO}" min="${FLOOR}"
           max="${TODAY()}" onchange="setRange()">
-        ${(PFROM!==FLOOR||PTO!==TODAY())?
+        ${(PFROM!==dflt()||PTO!==TODAY())?
           `<button class="act" onclick="resetRange()">Reset</button>`:''}
       </span>
     </div>
@@ -8017,7 +8829,7 @@ function allFAccts(){
 function setFRange(){
   FFROM=$('#ffrom').value||FLOOR; FTO=$('#fto').value||TODAY(); drawFollowers();
 }
-function resetFRange(){ FFROM=FLOOR; FTO=TODAY(); drawFollowers(); }
+function resetFRange(){ FFROM=dflt(); FTO=TODAY(); drawFollowers(); }
 
 async function drawFollowers(force){
   const el=$('#foll');
@@ -8037,7 +8849,7 @@ async function drawFollowers(force){
       <div class="empty"><b>Could not reach Zernio.</b>
         ${esc(FOLL.error||PUB.error)}</div>`;return;
   }
-  if(FFROM===null){FFROM=FLOOR;FTO=TODAY();}
+  if(FFROM===null){FFROM=dflt();FTO=TODAY();}
   const all=(PUB.posts||[]).filter(r=>(r.when||'')>=FLOOR);
 
   /* Which accounts count toward this profile's numbers. Posting to someone
@@ -8068,7 +8880,7 @@ async function drawFollowers(force){
         <span class="sub">to</span>
         <input type="date" id="fto" value="${FTO}" min="${FLOOR}"
           max="${TODAY()}" onchange="setFRange()">
-        ${(FFROM!==FLOOR||FTO!==TODAY())?
+        ${(FFROM!==dflt()||FTO!==TODAY())?
           `<button class="act" onclick="resetFRange()">Reset</button>`:''}
       </span>
       <button class="act" onclick="drawFollowers(true)">Refresh</button></div>`
@@ -8181,7 +8993,14 @@ function followerBlock(){
 /* Published posts over time, stacked by platform. */
 let PBUCKETS=[], PMETRIC=localStorage.getItem('desk.pmetric')||'posts';
 const METRICS={posts:'Posts', views:'Views', impressions:'Impressions',
-  reach:'Reach', likes:'Likes'};
+  reach:'Reach', likes:'Likes', followers:'Followers'};
+/* Followers is a level, not a sum: a bar is each platform's count at the end
+   of its period, stacked. The history lives with the Numbers tab, so the
+   button only appears there. */
+const onNumbers=()=>{const o=document.querySelector('nav button[aria-selected=true]');
+  return !!(o&&o.dataset.t==='foll');};
+const metricNow=()=>PMETRIC==='followers'&&!(onNumbers()&&FOLL&&FOLL.account_history)
+  ?'posts':PMETRIC;
 function setMetric(m){PMETRIC=m;localStorage.setItem('desk.pmetric',m);
   redrawTimeline();}
 
@@ -8197,23 +9016,57 @@ function opener(text){
 
 const niceDay=iso=>new Date(i2t(iso)).toLocaleString('en-CA',
   {day:'numeric',month:'short',year:'numeric',timeZone:'UTC'});
-const metricTotal=rows=>PMETRIC==='posts'?rows.length
-  :rows.reduce((a,r)=>a+(r[PMETRIC]||0),0);
+const metricTotal=rows=>metricNow()==='posts'?rows.length
+  :rows.reduce((a,r)=>a+(r[metricNow()]||0),0);
+
+/* Followers per platform at the end of each period: the last reading on or
+   before it, carried forward over days nobody took one. */
+function follBuckets(keys){
+  const per={};
+  (FOLL.accounts||[]).forEach(a=>{
+    const h=(FOLL.account_history||{})[a.account_id]||{};
+    Object.entries(h).forEach(([d,n])=>{ if(n==null)return;
+      ((per[a.platform]=per[a.platform]||{})[d]=((per[a.platform]||{})[d]||0)+n);});
+  });
+  const out={};
+  keys.forEach(k=>{
+    const end=t2i(i2t(bnext(k,PPERIOD))-DAY);
+    Object.entries(per).forEach(([pl,h])=>{
+      const ds=Object.keys(h).filter(d=>d<=end).sort();
+      if(ds.length)(out[k]=out[k]||{})[pl]=h[ds[ds.length-1]];
+    });
+  });
+  return out;
+}
+/* A round top for the scale and the ticks under it: 1, 2, 2.5 or 5 times a
+   power of ten, about four steps. */
+function niceScale(max){
+  const raw=Math.max(1,max)/4, p=Math.pow(10,Math.floor(Math.log10(raw)));
+  const step=[1,2,2.5,5,10].map(m=>m*p).find(s=>s>=raw);
+  const top=Math.ceil(Math.max(1,max)/step)*step;
+  const ticks=[]; for(let v=0;v<=top+1e-9;v+=step) ticks.push(+v.toFixed(6));
+  return {top,ticks};
+}
 
 function timeline(rows){
   const seg=[['day','Day'],['week','Week'],['month','Month']].map(([k,l])=>
     `<button class="${PPERIOD===k?'on':''}" onclick="setPPeriod('${k}')">${l}</button>`
     ).join('');
-  const mseg=Object.entries(METRICS).map(([k,l])=>
-    `<button class="${PMETRIC===k?'on':''}" onclick="setMetric('${k}')">${l}</button>`
+  const metric=metricNow();
+  const mseg=Object.entries(METRICS)
+    .filter(([k])=>k!=='followers'||(onNumbers()&&FOLL&&FOLL.account_history))
+    .map(([k,l])=>
+    `<button class="${metric===k?'on':''}" onclick="setMetric('${k}')">${l}</button>`
     ).join('');
   if(!rows.length) return '';
   const buck={}, meta={};
   rows.forEach(r=>{
     const iso=(r.when||'').slice(0,10); if(!iso)return;
     const k=bstart(iso,PPERIOD);
-    const add=PMETRIC==='posts'?1:(r[PMETRIC]||0);
-    (buck[k]=buck[k]||{})[r.platform]=(buck[k][r.platform]||0)+add;
+    if(metric!=='followers'){
+      const add=metric==='posts'?1:(r[metric]||0);
+      (buck[k]=buck[k]||{})[r.platform]=(buck[k][r.platform]||0)+add;
+    }
     const m=(meta[k]=meta[k]||{});
     const p=(m[r.platform]=m[r.platform]||{n:0,likes:0,comments:0,shares:0,
       views:0,impressions:0,reach:0,lines:[]});
@@ -8227,11 +9080,20 @@ function timeline(rows){
   const keys=[]; let k=bstart(dates[0]<FLOOR?FLOOR:dates[0],PPERIOD);
   const last=bstart(dates[dates.length-1],PPERIOD);
   for(let i=0;i<800&&k<=last;i++){keys.push(k);k=bnext(k,PPERIOD);}
-  const order=Object.keys(PLAT).filter(pl=>rows.some(r=>r.platform===pl));
-  const max=Math.max(1,...keys.map(x=>Object.values(buck[x]||{}).reduce((a,b)=>a+b,0)));
+  if(metric==='followers') Object.assign(buck, follBuckets(keys));
+  const order=Object.keys(PLAT).filter(pl=>metric==='followers'
+    ? keys.some(x=>(buck[x]||{})[pl]) : rows.some(r=>r.platform===pl));
+  const {top:max,ticks}=niceScale(Math.max(...keys.map(x=>
+    Object.values(buck[x]||{}).reduce((a,b)=>a+b,0))));
   if(!Object.keys(buck).length) return '';
+  const tickLabel=v=>v>=1e6?(v/1e6).toFixed(v%1e6?1:0)+'M'
+    :v>=1e4?(v/1e3).toFixed(0)+'k':v>=1e3?(v/1e3).toFixed(v%1e3?1:0)+'k':String(v);
+  const grid=ticks.slice(1).map(v=>
+    `<i class="grid" style="bottom:${(v/max*128).toFixed(1)}px"></i>`).join('');
+  const yax=ticks.map(v=>
+    `<span style="bottom:${(v/max*128).toFixed(1)}px">${tickLabel(v)}</span>`).join('');
   const wide={day:7,week:16,month:30}[PPERIOD];
-  PBUCKETS=keys.map(x=>({key:x,counts:buck[x]||{},meta:meta[x]||{},order}));
+  PBUCKETS=keys.map(x=>({key:x,counts:buck[x]||{},meta:meta[x]||{},order,metric}));
   const bars=keys.map((x,i)=>{
     const c=buck[x]||{};
     return `<div class="bar" data-i="${i}">${order.filter(pl=>c[pl]).map(pl=>
@@ -8243,11 +9105,17 @@ function timeline(rows){
     <div class="striphead"><h2>Timeline</h2><span class="spacer"></span>
       <div class="seg">${mseg}</div>
       <div class="seg">${seg}</div></div>
-    <p class="sum">${esc(METRICS[PMETRIC])}: ${exact(metricTotal(rows))} -
-       ${esc(niceDay(PFROM||FLOOR))} to ${esc(niceDay(PTO||TODAY()))}</p>
-    <div class="barwrap"><div style="min-width:${keys.length*wide}px">
-      <div class="bars" id="pbars">${bars}</div>
-      <div class="axis">${ax}</div></div></div>
+    <p class="sum">${metric==='followers'
+       ? `Followers at the end of each ${PPERIOD}, stacked by platform. Now ${
+          exact(Object.values(buck[keys[keys.length-1]]||{}).reduce((a,b)=>a+b,0))}`
+       : `${esc(METRICS[metric])}: ${exact(metricTotal(rows))}`} -
+       ${esc(niceDay((onNumbers()?FFROM:PFROM)||dflt()))} to ${
+         esc(niceDay((onNumbers()?FTO:PTO)||TODAY()))}</p>
+    <div class="chartrow">
+      <div class="barwrap"><div style="min-width:${keys.length*wide}px">
+        <div class="bars" id="pbars">${grid}${bars}</div>
+        <div class="axis">${ax}</div></div></div>
+      <div class="yaxis" aria-hidden="true">${yax}</div></div>
     <div class="keys">${order.map(pl=>
       `<span><b style="background:${PLAT[pl].ink}"></b>${esc(PLAT[pl].label)}</span>`
       ).join('')}</div></div>`;
@@ -8266,6 +9134,21 @@ function wirePubTip(){
     const live=d.order.filter(pl=>(d.meta[pl]||{}).n);
     const posts=sum('n');
     const lines=on?((d.meta[on]||{}).lines||[]):[];
+    if(d.metric==='followers'){
+      const fl=d.order.filter(pl=>d.counts[pl]);
+      const all=fl.reduce((a,pl)=>a+d.counts[pl],0);
+      t.innerHTML=`<h4>${esc(brange(d.key,PPERIOD))}</h4>
+        ${fl.map(pl=>`<div class="r${pl===on?' on':''}">
+          <b style="background:${PLAT[pl].ink}"></b>
+          <span>${esc(PLAT[pl].label)}</span><i>${exact(d.counts[pl])}</i></div>`).join('')
+         ||'<div class="r"><span>No reading yet</span></div>'}
+        ${fl.length?`<div class="tot">${exact(all)} followers</div>`:''}`;
+      t.hidden=false;
+      const r=t.getBoundingClientRect();
+      t.style.left=Math.max(8,Math.min(e.clientX+16,innerWidth-r.width-8))+'px';
+      t.style.top=Math.max(8,e.clientY-r.height-14)+'px';
+      return;
+    }
     t.innerHTML=`<h4>${esc(brange(d.key,PPERIOD))}</h4>
       ${live.length?`<div class="r hdr"><b></b><span></span>
         <i>posts</i><i>&#9654;</i><i>&#9829;</i><i>&#128172;</i></div>`:''}
