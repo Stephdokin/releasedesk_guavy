@@ -76,20 +76,29 @@ channels:
   tiktok:
     prefer_shape: portrait
     label: TikTok
+    # Captions on TikTok carry no clickable links, so none are sent. Pictures
+    # go as a photo post: see tiktok_fields() in push_zernio.py.
+    drop_links: true
     accepts:
     - video_9x16
+    - image
     days:
     - Mon
     - Tue
     - Wed
     - Thu
+    - Fri
     - Sat
+    - Sun
     time: '18:00'
-    notes: Not connected yet. Connected last, once the post flow is proven.
+    notes: Connected in Zernio, 5 Oct 2026 (@guavysentiment3).
   x:
     prefer_shape: portrait     # same 9:16 as Instagram, 3 Oct 2026. X crops tall
                                # images in the timeline; the corner text sits
                                # inside the middle 4:5, so it survives.
+    # No links, 5 Oct 2026. X charges $0.20 to post anything carrying a link
+    # and $0.015 without. The graphic prints guavy.com/wire.
+    drop_links: true
     label: X
     zernio_platform: twitter
     accepts:
@@ -108,6 +117,28 @@ channels:
     time: 09:00
     max_chars: 280
     notes: Connected in Zernio, 3 Oct 2026.
+  # @GuavyForex, an X account of its own that carries FX stories only. Same
+  # graphic, same no-link rule as @GuavySentiment. Connected 5 Oct 2026.
+  x_forex:
+    platform: x
+    zernio_platform: twitter
+    label: X Forex
+    prefer_shape: portrait
+    drop_links: true
+    accepts:
+    - image
+    - text
+    days:
+    - Mon
+    - Tue
+    - Wed
+    - Thu
+    - Fri
+    - Sat
+    - Sun
+    time: 09:00
+    max_chars: 280
+    notes: Connected in Zernio, 5 Oct 2026. FX only.
 platforms:
   linkedin:
     label: LinkedIn
@@ -211,12 +242,41 @@ markets:
         crypto:
           min_hours: 0.65
           per_day: 12
+    tiktok:
+      # Started small, 5 Oct 2026: one a day per market, four in all, about
+      # four hours apart. A new account, and TikTok moderates API posts more
+      # strictly than the app. Zernio allows 15 photo posts a day.
+      min_hours: 12
+      per_day: 1
+      spread_hours: 4
+      min_clout: 60
+    x_forex:
+      # @GuavyForex: FX only, about half the rate of the X Wire stream (12 a
+      # day against 24), one every 80 minutes or so outside quiet hours. Set
+      # 5 Oct 2026. A dedicated feed would run out of FX tickers under the
+      # 24-hour any-account rule, so here a ticker waits ticker_hours and
+      # only against this account's own posts; an article still goes out
+      # once anywhere.
+      only: [forex]
+      min_hours: 1.3
+      per_day: 12
+      spread_hours: 1.3
+      min_clout: 35
+      ticker_hours: 6
+      ticker_scope: channel
     facebook:
       min_hours: 7
       per_day: 3
       min_clout: 55
-    # youtube and tiktok are not news-shaped and are deliberately absent. A
-    # channel with no entry here never posts from Markets.
+    youtube:
+      # In the table, not posting: YouTube takes video only, and the desk
+      # does not make Shorts yet. Delete `paused` once it does. The numbers
+      # are a placeholder, one a day per market, to be set then.
+      paused: needs video, Shorts not built yet
+      min_hours: 12
+      per_day: 1
+      min_clout: 60
+    # tiktok is absent. A channel with no entry here never posts from Markets.
 
 phases:
   tease:
@@ -255,12 +315,35 @@ blackouts:
 ads:
   repeat_days: 3
   clear_minutes: 15
+  # size is the default picture size per channel (5 Oct 2026: square for X
+  # and LinkedIn, 4:5 for Instagram). The Ads tab can change it; an ad not
+  # made in the chosen size posts the size nearest it in shape.
   channels:
     x:
+      size: 1080x1080
       per_day: 8
+      # No link on X ads (5 Oct 2026): $0.20 a post with one. The ad's
+      # picture carries the call to action and guavy.com. Other channels
+      # keep the tracked link, where it costs nothing.
+      links: none
     linkedin:
+      size: 1080x1080
       per_day: 4
     instagram:
+      size: 1080x1350
       per_day: 4
     facebook:
+      size: 1080x1350
       per_day: 4              # not connected yet; waits until it is
+    tiktok:
+      # 9:16, the shape TikTok fills the screen with. No link: captions
+      # there are not clickable. Ads are marked as Guavy's own brand.
+      size: 1080x1920
+      per_day: 2
+      links: none
+    youtube:
+      # In the table, not posting, until the desk makes video ads. Delete
+      # `paused` then. The number is a placeholder.
+      paused: needs video, Shorts not built yet
+      size: 1080x1920
+      per_day: 2

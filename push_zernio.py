@@ -159,6 +159,41 @@ def title_from(text, limit=YT_TITLE_MAX):
     return stem.rstrip(" ,;:-\u2014") + "\u2026"
 
 
+TIKTOK_TITLE_MAX = 90
+
+
+def tiktok_fields(row, body, items):
+    """What TikTok needs on top of an ordinary post.
+
+    TikTok refuses any post without tiktokSettings. Its privacy level must be
+    one the account offers, and @guavysentiment3 offers public only. The two
+    consent flags are TikTok's legal requirement that the post was seen and
+    agreed to before it went: the desk sets them because posting from here,
+    by hand or on Auto, is that agreement. Pictures go as a photo post, whose
+    `content` is a 90-character title with the full caption in `description`.
+    An ad promotes Guavy, which TikTok requires disclosed as the account's
+    own brand; a Wire post is not commercial.
+    """
+    photo = bool(items) and all(i.get("type") == "image" for i in items)
+    ad = (row["campaign"] or "") == "ads"
+    ts = {"privacy_level": "PUBLIC_TO_EVERYONE", "allow_comment": True,
+          "content_preview_confirmed": True, "express_consent_given": True,
+          "commercialContentType": "brand_organic" if ad else "none"}
+    out = {}
+    if photo:
+        ts.update(media_type="photo", photo_cover_index=0,
+                  description=body[:4000])
+        # The headline where the post has one: a Wire post's copy opens with
+        # the article's first paragraph, and 90 characters of that is a
+        # sentence cut off, not a title.
+        head = (row["title"] or "").strip() if "title" in row.keys() else ""
+        out["content"] = title_from(head or body, TIKTOK_TITLE_MAX)
+    else:
+        ts.update(allow_duet=False, allow_stitch=False)
+    out["tiktokSettings"] = ts
+    return out
+
+
 def payload_for(row, platform, account_id, items, tz, soon=False):
     body = (row["copy"] or "").rstrip()
     tags = json.loads(row["tags"] or "[]")
@@ -199,6 +234,8 @@ def payload_for(row, platform, account_id, items, tz, soon=False):
                           **({"platformSpecificData": psd} if psd else {})}]}
     if items:
         out["mediaItems"] = list(items)
+    if platform == "tiktok":
+        out.update(tiktok_fields(row, body, items))
     out["scheduledFor"] = soon_at(tz) if soon else f"{row['date']}T{row['time']}:00"
     out["timezone"] = tz
     return out

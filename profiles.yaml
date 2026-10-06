@@ -12,9 +12,9 @@ profiles:
   guavy:
     label: Guavy
     kind: product
-    # Which channels arrive ticked in the New post sheet. Both live accounts,
-    # because a blog or a card is wanted on both. Untick per post, not here.
-    post_by_default: [linkedin, instagram]
+    # Which channels arrive ticked in the New post sheet. Untick per post,
+    # not here. X added 5 Oct 2026.
+    post_by_default: [linkedin, instagram, x]
     brand:
       ink: '#00d4b4'
       note: Guavy teal. Taken from guavy.com, where it is the only colour in
@@ -214,9 +214,11 @@ profiles:
       api_key_env: ZERNIO_API_KEY
       # From `python3 push_zernio.py accounts` on Guavy's own key. LinkedIn
       # and Instagram 23 Sep 2026; X and YouTube 3 Oct 2026. facebook and
-      # tiktok have no Guavy account, so those channels cannot push.
+      # TikTok 5 Oct 2026. facebook has no Guavy account, so it cannot push.
       accounts:
         linkedin: 69fc279192b3d8e85f87edef
         instagram: 69fc283392b3d8e85f87f1b8
         x: 6ac199578a109a539bdd5db6           # @GuavySentiment
+        x_forex: 6ac45ca1674a7205590d1ae1     # @GuavyForex, FX only (5 Oct 2026)
+        tiktok: 6ac45e96d853e39e68f08d74      # @guavysentiment3 (5 Oct 2026)
         youtube: 6ac19abfeae25a4a7ee467e4     # guavysentiment

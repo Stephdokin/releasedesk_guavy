@@ -221,6 +221,18 @@ CREATE TABLE IF NOT EXISTS ads (
   UNIQUE (profile, property, variation)
 );
 
+-- Every size an ad was made in. The zip can carry several per ad, and each
+-- channel posts the size chosen for it in the ads pacing table.
+CREATE TABLE IF NOT EXISTS ad_sizes (
+  id       INTEGER PRIMARY KEY,
+  ad_id    INTEGER NOT NULL,
+  size     TEXT NOT NULL,
+  width    INTEGER,
+  height   INTEGER,
+  media_id INTEGER NOT NULL,
+  UNIQUE (ad_id, size)
+);
+
 CREATE TABLE IF NOT EXISTS folders (
   id      INTEGER PRIMARY KEY,
   profile TEXT NOT NULL,
@@ -836,7 +848,9 @@ def api_accounts():
                 profile=prof,
                 profile_label=(pdata or {}).get("label") or prof,
                 channel=chan, platform=plat, account_id=acct,
-                label=(plats.get(plat) or {}).get("label") or plat,
+                # The channel's own label first: two X accounts both called
+                # "X" in the post sheet is no way to choose between them.
+                label=ch.get("label") or (plats.get(plat) or {}).get("label") or plat,
                 ink=(plats.get(plat) or {}).get("ink", "#8A8F86"),
                 delivery=ch.get("delivery") or "zernio",
                 free_slots=free, on=chan in defaults))
@@ -3038,6 +3052,12 @@ def api_markets():
         if accounts.get(chan) in (None, "", "TODO"):
             return dict(last=None, hours_since=None, ready_at=None,
                         used_today=0, blocked="not connected")
+        if v.get("paused"):
+            return dict(last=None, hours_since=None, ready_at=None,
+                        used_today=0, blocked=str(v["paused"]))
+        if v.get("only") and market not in v["only"]:
+            return dict(last=None, hours_since=None, ready_at=None,
+                        used_today=0, blocked=f"{', '.join(v['only'])} only")
         mine = market_spec(v, market)
         gap = float(mine.get("min_hours") or 0)
         cap = int(mine.get("per_day") or 0)
@@ -3493,6 +3513,11 @@ def channel_due(con, cfg, chan, market, profile, now=None):
     spec = ((cfg.get("channels") or {}).get(chan)) or {}
     if not spec:
         return False, "no markets pacing for this channel"
+    # In the table but held: shown so its pacing is ready, never fired.
+    if spec.get("paused"):
+        return False, str(spec["paused"])
+    if spec.get("only") and market not in spec["only"]:
+        return False, f"{', '.join(spec['only'])} only"
     # A channel with no Zernio account can be paced all it likes; the push
     # would skip it and the desk would be left holding a post that can never
     # go anywhere. x and facebook are configured but not connected.
@@ -3557,7 +3582,12 @@ def market_spec(spec, market):
     bigger daily cap and a shorter gap, the others a smaller cap and a longer
     one, and the channel-wide spacing still sets the overall rhythm.
     """
-    return {**spec, **(((spec or {}).get("markets") or {}).get(market) or {})}
+    out = {**spec, **(((spec or {}).get("markets") or {}).get(market) or {})}
+    # A channel that carries some markets only (@GuavyForex) gives the rest
+    # no allowance, so they never take its slots and its totals are its own.
+    if spec.get("only") and market not in spec["only"]:
+        out["per_day"] = 0
+    return out
 
 
 def market_order(con, cfg, chan, profile, markets):
@@ -3615,7 +3645,13 @@ def auto_once(market, channel, profile, send=True, at_minutes=None,
     m = markets_cfg()
     rank = m.get("rank") or {}
     since = (time.time() - float(m.get("window_hours") or 24) * 3600) * 1000
-    posted_syms, _t = recent_posts(con, market)
+    # A dedicated feed (ticker_scope: channel) holds a ticker back against its
+    # own posts only, for ticker_hours; every other channel against all of them
+    # for a day. The picker sees the same history it is held to.
+    mspec = ((m.get("channels") or {}).get(channel)) or {}
+    scope = channel if mspec.get("ticker_scope") == "channel" else None
+    posted_syms, _t = recent_posts(con, market,
+                                   float(mspec.get("ticker_hours") or 24), scope)
     cands = shortlist(con, market, since, float(m.get("min_sentiment") or 0),
                       float(rank.get("sentiment", 0.6)),
                       float(rank.get("clout", 0.4)), skip_symbols=posted_syms)
@@ -3624,7 +3660,7 @@ def auto_once(market, channel, profile, send=True, at_minutes=None,
                             "a ticker already posted today")
     _budget(t0, "the picker")
     got = writer.pick(cands, market, profiles().get(profile) or {},
-                      posted=recent_posts(con, market, 48)[1])
+                      posted=recent_posts(con, market, 48, scope)[1])
     # The loop leaves a slot empty rather than post a weak story. A hand fire
     # passes `insist`, because someone has already decided to post.
     brief = chosen_brief(got, cands, insist=insist)
@@ -3763,6 +3799,9 @@ def market_fire(market):
     if not chan:
         return jsonify(error="Which channel?"), 400
     con, cfg = db(), markets_cfg()
+    held = ((cfg.get("channels") or {}).get(chan) or {}).get("paused")
+    if held:                       # force skips pacing, never a paused channel
+        return jsonify(error=f"{chan} is paused: {held}"), 409
     if not b.get("force"):
         ok, why = channel_due(con, cfg, chan, market, prof)
         if not ok:
@@ -3915,7 +3954,7 @@ def chosen_brief(got, cands, insist=False):
                     "score.") if rest else None
 
 
-def recent_posts(con, market, hours=24):
+def recent_posts(con, market, hours=24, channel=None):
     """Market posts that went out, or are going, in the last `hours`.
 
     Returns (symbols, titles). An article id alone was not enough: three
@@ -3924,10 +3963,13 @@ def recent_posts(con, market, hours=24):
     """
     cut = (datetime.now() - timedelta(hours=hours)).isoformat(timespec="seconds")
     syms, titles = set(), []
-    for r in con.execute(
-            """SELECT asset, title FROM posts WHERE campaign='markets'
-               AND state != 'rejected' AND asset LIKE ? AND updated >= ?
-               ORDER BY updated DESC""", (f"{market}:%", cut)):
+    q = """SELECT asset, title FROM posts WHERE campaign='markets'
+           AND state != 'rejected' AND asset LIKE ? AND updated >= ?"""
+    args = [f"{market}:%", cut]
+    if channel:
+        q += " AND channel=?"
+        args.append(channel)
+    for r in con.execute(q + " ORDER BY updated DESC", args):
         _m, sym, _a = asset_parts(r["asset"])
         if sym:
             syms.add(sym.upper())
@@ -4454,7 +4496,11 @@ def api_channels():
         out[key] = dict(platform=p, label=c.get("label") or key,
                         ink=(plats.get(p) or {}).get("ink", "#8A8F86"),
                         delivery=c.get("delivery") or "zernio",
-                        handoff_to=c.get("handoff_to"))
+                        handoff_to=c.get("handoff_to"),
+                        # The compose sheet takes the link out of these
+                        # channels' copy as you write, so you see what goes.
+                        drop_links=bool(c.get("drop_links")),
+                        max_chars=max_chars(cfg, key))
     return jsonify(channels=out, platforms=plats)
 
 
@@ -5126,13 +5172,16 @@ def ad_key(ad):
 
 def _ad_row(con, ad):
     d = dict(ad)
+    d["sizes"] = [dict(r) for r in con.execute(
+        """SELECT size, width, height, media_id FROM ad_sizes WHERE ad_id=?
+           ORDER BY width*1.0/height DESC, size""", (ad["id"],))]
     d["media"] = (dict(con.execute("SELECT * FROM media WHERE id=?",
                                    (ad["media_id"],)).fetchone() or {})
                   if ad["media_id"] else None)
     return d
 
 
-def ad_copy(ad, plat, limit=None, link_below=False):
+def ad_copy(ad, plat, limit=None, link_below=False, no_link=False):
     """The ad's own words, in the order the ad reads, with its link last.
 
     A channel too short for all of it drops the sub-line first; the headline,
@@ -5148,6 +5197,10 @@ def ad_copy(ad, plat, limit=None, link_below=False):
         # behind has to say where it went rather than end on a colon.
         tail = (f"{cta}: link in the first comment" if cta
                 else "Link in the first comment") + f"\n{url}"
+    if no_link:
+        # No link, so no call to action either: "Sign Up" with nowhere to go
+        # reads as a fault. The picture carries the button and guavy.com.
+        tail = ""
     for parts in ((head, sub, tail), (head, tail),
                   ((ad.get("short_headline") or head).strip(), tail)):
         text = "\n\n".join(x for x in parts if x)
@@ -5162,6 +5215,8 @@ def ad_due(con, chan, profile, now=None):
     spec = ((cfg.get("channels") or {}).get(chan)) or {}
     if not spec:
         return False, "no ad pacing for this channel"
+    if spec.get("paused"):
+        return False, str(spec["paused"])
     z = ((profiles().get(profile) or {}).get("zernio") or {}).get("accounts") or {}
     if z.get(chan) in (None, "", "TODO"):
         return False, "not connected"
@@ -5227,6 +5282,93 @@ def pick_ad(con, chan, profile, exclude=()):
     return ok[0]
 
 
+def ad_size_for(chan):
+    """The size this channel posts ads in: chosen on the Ads tab, or the
+    channel's default from channels.yaml."""
+    spec = ((ads_cfg().get("channels") or {}).get(chan)) or {}
+    return (setting(f"ads.size.{chan}") or spec.get("size") or "").lower()
+
+
+def ad_media_for(con, ad, chan):
+    """The picture of this ad to post on this channel: (row, size, exact).
+
+    The chosen size if the ad was made in it; otherwise the size nearest it
+    in shape, so a channel set to 1080x1350 still posts something sensible
+    from a zip that only carries squares, and says so.
+    """
+    want = ad_size_for(chan)
+    rows = con.execute("SELECT * FROM ad_sizes WHERE ad_id=?", (ad["id"],)).fetchall()
+    pick, exact = None, False
+    if rows:
+        pick = next((r for r in rows if r["size"] == want), None)
+        exact = pick is not None
+        if not pick:
+            try:
+                ww, wh = (int(x) for x in want.split("x"))
+                ratio = ww / wh
+            except (ValueError, ZeroDivisionError):
+                ratio = 1.0
+            pick = min(rows, key=lambda r: abs((r["width"] or 1) / (r["height"] or 1) - ratio))
+        media = con.execute("SELECT * FROM media WHERE id=?",
+                            (pick["media_id"],)).fetchone()
+        return media, pick["size"], exact
+    media = con.execute("SELECT * FROM media WHERE id=?",
+                        (ad["media_id"],)).fetchone() if ad["media_id"] else None
+    size = f"{media['width']}x{media['height']}" if media else ""
+    return media, size, size == want
+
+
+def ad_text(ad, chan, cfg=None):
+    """What an ad says on one channel: (body, first_comment, link_rule).
+
+    The one place that decides, so the preview on the Ads tab is the post and
+    not a guess at it. Per ad channel, `links: none` posts it without its
+    link (X, where a link costs $0.20 a post); otherwise the link goes in the
+    first comment where the channel keeps links out of the body, and in the
+    body where it does not.
+    """
+    cfg = cfg or channels_cfg()
+    ch = (cfg.get("channels") or {}).get(chan) or {}
+    plat = ch.get("platform") or chan.split("_")[0]
+    aspec = ((ads_cfg().get("channels") or {}).get(chan)) or {}
+    none = str(aspec.get("links") or "").lower() == "none"
+    below = not none and bool(ch.get("drop_links") or ch.get("links_in_first_comment"))
+    copy = ad_copy(dict(ad), plat, max_chars(cfg, chan), link_below=below,
+                   no_link=none)
+    if copy is None:
+        return None, "", not none
+    rule = ch
+    if not none and (ch.get("drop_links") or ch.get("links_in_first_comment")):
+        rule = dict(ch, drop_links=False, links_in_first_comment=True)
+    body, first = split_link(copy, rule)
+    return body, first, not none
+
+
+@app.get("/api/ads/<int:aid>/preview")
+def ad_preview(aid):
+    """Each channel's post for one ad, exactly as it would go out."""
+    con = db()
+    ad = con.execute("SELECT * FROM ads WHERE id=?", (aid,)).fetchone()
+    if not ad:
+        return jsonify(error="no such ad"), 404
+    cfg = channels_cfg()
+    accts = ((profiles().get(ad["profile"]) or {}).get("zernio") or {}).get("accounts") or {}
+    out = []
+    for chan, spec in (ads_cfg().get("channels") or {}).items():
+        if accts.get(chan) in (None, "", "TODO"):
+            continue                 # never posts there, so nothing to preview
+        body, first, _ = ad_text(ad, chan, cfg)
+        plat = ((cfg.get("channels") or {}).get(chan) or {}).get("platform") or chan
+        media, size, exact = ad_media_for(con, ad, chan)
+        out.append(dict(channel=chan, body=body, first_comment=first,
+                        paused=bool(spec.get("paused")),
+                        media_id=media["id"] if media else None, size=size,
+                        exact=exact, wanted=ad_size_for(chan),
+                        chars=body_length(body or "", plat),
+                        limit=max_chars(cfg, chan)))
+    return jsonify(ad=_ad_row(con, ad), channels=out)
+
+
 def ad_once(chan, profile, send=True, at_minutes=None, ad_id=None):
     """Post one ad to one channel."""
     con, cfg = db(), channels_cfg()
@@ -5239,18 +5381,19 @@ def ad_once(chan, profile, send=True, at_minutes=None, ad_id=None):
         ad = pick_ad(con, chan, profile)
     if not ad:
         return dict(skipped="no ad is free to run on this channel")
-    media = con.execute("SELECT * FROM media WHERE id=?",
-                        (ad["media_id"],)).fetchone()
+    media, _size, _exact = ad_media_for(con, ad, chan)
     if not media:
         return dict(skipped=f"ad {ad['id']} has no picture")
-    below = bool(ch.get("drop_links") or ch.get("links_in_first_comment"))
-    copy = ad_copy(dict(ad), plat, max_chars(cfg, chan), link_below=below)
-    if not copy:
+    body, first, keep_link = ad_text(ad, chan, cfg)
+    if not body:
         return dict(skipped=f"ad {ad['id']} does not fit {plat}")
+    # Handed over with the link back on the end of the body, so _compose_one
+    # makes the same split again rather than this having to bypass it.
+    copy = body + (f"\n{first}" if first else "")
     made = _compose_one(con, cfg, profile, chan, [dict(media)], copy,
                         ad_key(ad), ad["property_name"] or "Ad",
                         ad["headline"] or "", send=send, at_minutes=at_minutes,
-                        campaign="ads", links_to_comment=True)
+                        campaign="ads", links_to_comment=keep_link)
     if not made:
         return dict(skipped="no slot free on that channel")
     return dict(posted=made, sent=bool(send), ad=ad["id"],
@@ -5353,28 +5496,39 @@ def ads_import():
         con.execute("UPDATE posts SET media_id=NULL WHERE media_id=?", (m["id"],))
         con.execute("DELETE FROM media WHERE id=?", (m["id"],))
         removed += 1
+    con.execute("DELETE FROM ad_sizes WHERE ad_id IN (SELECT id FROM ads "
+                "WHERE profile=?)", (prof,))
     con.execute("DELETE FROM ads WHERE profile=?", (prof,))
     con.execute("DELETE FROM folders WHERE profile=? AND bucket='ads'", (prof,))
     con.commit()
 
     made, missing = 0, []
+    con.execute("DELETE FROM ad_sizes WHERE ad_id NOT IN (SELECT id FROM ads)")
     for it in items:
         sizes = it.get("sizes") or []
         rel = (sizes[0] or {}).get("file") if sizes else ""
-        blob = pics.get(Path(rel or "").name)
         group = it.get("propertyName") or it.get("property") or "Ads"
-        mid = None
-        if blob:
+        got = []                  # (size, width, height, media id) per picture
+        for sz in sizes:
+            f = (sz or {}).get("file") or ""
+            blob = pics.get(Path(f).name)
+            if not blob:
+                missing.append(f or f"{group} v{it.get('variation')}")
+                continue
             row = _keep_image(con, prof, blob,
-                              mimetypes.guess_type(rel)[0] or "image/png", None,
-                              Path(rel).stem, it.get("headline"), "ad")
-            if row:
-                mid = row["id"]
-                con.execute("UPDATE media SET bucket='ads', folder_id=?, original=? "
-                            "WHERE id=?", (_ads_folder(con, prof, group),
-                                           Path(rel).name, mid))
-        else:
-            missing.append(rel or f"{group} v{it.get('variation')}")
+                              mimetypes.guess_type(f)[0] or "image/png", None,
+                              Path(f).stem, it.get("headline"), "ad")
+            if not row:
+                continue
+            con.execute("UPDATE media SET bucket='ads', folder_id=?, original=? "
+                        "WHERE id=?", (_ads_folder(con, prof, group),
+                                       Path(f).name, row["id"]))
+            label = (sz.get("size") or f"{row['width']}x{row['height']}").lower()
+            got.append((label, row["width"], row["height"], row["id"]))
+        # The tile shows the square one where there is one: it is the shape
+        # the grid is laid out in.
+        mid = next((g[3] for g in got if g[1] and g[1] == g[2]),
+                   got[0][3] if got else None)
         con.execute(
             """INSERT INTO ads (profile, property, variation, added, media_id,
                property_name, audience, headline, short_headline, sub, cta, url,
@@ -5384,6 +5538,10 @@ def ads_import():
              it.get("audience"), it.get("headline"), it.get("shortHeadline"),
              it.get("sub"), it.get("cta"),
              it.get("propertyUtm") or it.get("propertyUrl"), rel))
+        aid = con.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for label, w, h, m in got:
+            con.execute("INSERT OR REPLACE INTO ad_sizes (ad_id,size,width,height,"
+                        "media_id) VALUES (?,?,?,?,?)", (aid, label, w, h, m))
         made += 1
     con.commit()
     return jsonify(replaced=old, added=made, missing=missing,
@@ -5475,14 +5633,37 @@ def ads_pacing():
             except ValueError:
                 pass
         out.append(dict(channel=chan, per_day=int(spec.get("per_day") or 0),
+                        paused=bool(spec.get("paused")),
                         spacing=gap, used_today=used, due=ok, blocked=why,
                         last=last["updated"] if last else None,
                         last_headline=last["headline"] if last else None,
                         next_at=nxt))
-    return jsonify(channels=out, mode=ads_mode(),
+    sizes = [dict(size=r["size"], ads=r["n"]) for r in con.execute(
+        """SELECT s.size, COUNT(DISTINCT s.ad_id) n FROM ad_sizes s
+           JOIN ads a ON a.id=s.ad_id WHERE a.profile=? GROUP BY s.size
+           ORDER BY s.size""", (prof,))]
+    total = con.execute("SELECT COUNT(*) FROM ads WHERE profile=?", (prof,)).fetchone()[0]
+    have = {x["size"]: x["ads"] for x in sizes}
+    for c in out:
+        c["size"] = ad_size_for(c["channel"])
+        c["size_ads"] = have.get(c["size"], 0)
+    return jsonify(channels=out, mode=ads_mode(), sizes=sizes, total_ads=total,
                    repeat_days=float(cfg.get("repeat_days") or 3),
                    quiet_hours=cfg.get("quiet_hours")
                    or markets_cfg().get("quiet_hours") or [])
+
+
+@app.post("/api/ads/size")
+def ads_size_set():
+    """Which size of ad a channel posts."""
+    b = request.get_json(silent=True) or {}
+    chan, size = b.get("channel"), (b.get("size") or "").lower()
+    if chan not in (ads_cfg().get("channels") or {}):
+        return jsonify(error="No ad pacing for that channel."), 400
+    if not re.fullmatch(r"\d+x\d+", size):
+        return jsonify(error="A size looks like 1080x1350."), 400
+    set_setting(f"ads.size.{chan}", size)
+    return jsonify(channel=chan, size=size)
 
 
 @app.post("/api/ads/fire")
@@ -5492,6 +5673,9 @@ def ads_fire():
     prof, chan = b.get("profile") or "", b.get("channel")
     if not chan:
         return jsonify(error="Which channel?"), 400
+    held = ((ads_cfg().get("channels") or {}).get(chan) or {}).get("paused")
+    if held:
+        return jsonify(error=f"{chan} is paused: {held}"), 409
     if not b.get("force"):
         ok, why = ad_due(db(), chan, prof)
         if not ok:
@@ -5649,13 +5833,44 @@ nav .count{color:var(--case);background:var(--ok);border-radius:9px;
 .bars .bar{position:relative;z-index:1}
 .chartrow{display:flex;align-items:flex-start;gap:8px}
 /* ---- ads tab ---- */
-.addrop{border:1px dashed var(--rule);padding:18px 20px;margin:0 0 18px;
-  color:var(--dim);font-size:15px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.addrop.over{border-color:var(--brand);color:var(--ink);background:rgba(229,227,220,.04)}
 .adgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
-.adcard{border:1px solid var(--rule);background:var(--panel);display:flex;flex-direction:column}
+.adcard{border:1px solid var(--rule);background:var(--panel);display:flex;flex-direction:column;
+  cursor:pointer}
+.adcard:hover{border-color:var(--dim)}
+#ads.over{outline:2px dashed var(--brand);outline-offset:6px}
+/* Pacing tables fold up under their heading. Open unless you closed it. */
+details.pace>summary{list-style:none;cursor:pointer}
+details.pace>summary::-webkit-details-marker{display:none}
+details.pace>summary .chev{display:inline-block;width:14px;color:var(--dim);
+  transition:transform .15s;margin-right:4px}
+details.pace[open]>summary .chev{transform:rotate(90deg)}
+details.pace>summary:hover h2{color:var(--ink)}
+details.pace>summary:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
+/* The ad, full size, beside what each channel will post. */
+.admodal{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.62);
+  display:flex;align-items:center;justify-content:center;padding:24px}
+.admodal[hidden]{display:none}
+.admodal .box{background:var(--panel);border:1px solid var(--rule);max-width:1100px;
+  width:100%;max-height:calc(100vh - 48px);overflow:auto;display:grid;
+  grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:0}
+.admodal .pic{background:#000;display:flex;align-items:center;justify-content:center}
+.admodal .pic img{max-width:100%;max-height:calc(100vh - 50px);width:auto;height:auto;display:block}
+.admodal .txt{padding:20px 22px;display:flex;flex-direction:column;gap:14px}
+.admodal .top{display:flex;align-items:flex-start;gap:12px}
+.admodal .top h3{margin:0;font-size:18px;line-height:1.3;flex:1}
+.admodal .grp{font-size:12px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+.admodal .post{border:1px solid var(--rule);padding:10px 12px}
+.admodal .post h4{margin:0 0 6px;font-size:13px;display:flex;gap:8px;align-items:center}
+.admodal .post h4 .sub{font-weight:400}
+.admodal .post pre{margin:0;white-space:pre-wrap;word-break:break-word;font:inherit;
+  font-size:14px;line-height:1.45}
+.admodal .post .fc{margin-top:8px;font-size:13px;color:var(--dim);word-break:break-all}
+@media (max-width:760px){.admodal .box{grid-template-columns:1fr}}
 .adcard.off{opacity:.5}
-.adcard img{width:100%;aspect-ratio:1/1;object-fit:cover;display:block}
+/* Every tile the same square frame, the picture whole inside it, so a mix of
+   square, 4:5 and 9:16 lines up in rows. */
+.adcard .adpic{position:relative;aspect-ratio:1/1;background:#000;overflow:hidden}
+.adcard .adpic img{position:absolute;inset:0;margin:auto;max-width:100%;max-height:100%;display:block}
 .adcard .body{padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
 .adcard .grp{font-size:12px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
 .adcard .hl{font-weight:600;font-size:15px;line-height:1.3}
@@ -6543,14 +6758,25 @@ function setCTab(k){
   /* Opening LinkedIn for the first time starts you from the copy rather than
      a blank box, because a LinkedIn post here is the same news with a
      paragraph in front of it, not a different one. */
-  if(k==='li' && !LIDRAFT.trim() && (CDRAFT||'').trim()) LIDRAFT=CDRAFT;
+  if(k==='li' && !LIDRAFT.trim() && (CDRAFT||'').trim()) LIDRAFT=forLi(CDRAFT);
   paintCompose();
 }
 function pullCopy(which){
   rememberCopy();
-  if(which==='li') LIDRAFT=CDRAFT||''; else XDRAFT=CDRAFT||'';
+  if(which==='li') LIDRAFT=forLi(CDRAFT); else XDRAFT=forX(CDRAFT);
   paintCompose();
 }
+/* X and LinkedIn post without links (channels.yaml drop_links): X charges
+   $0.20 a post that carries one, and LinkedIn holds back posts that send
+   people off the site. The desk strips them when it sends; doing it here as
+   well means the X and LinkedIn tabs show what will actually go out. */
+const noLink=c=>!!(CHAN[c]||{}).drop_links;
+function stripLinks(t){
+  return (t||'').replace(/https?:\/\/\S+/g,'').replace(/[ \t]+$/gm,'')
+    .replace(/\n{3,}/g,'\n\n').trim();
+}
+const forX=t=>noLink('x')?stripLinks(t):(t||'');
+const forLi=t=>noLink('linkedin')?stripLinks(t):(t||'');
 function tabValue(){ return {copy:CDRAFT||'', x:XDRAFT, li:LIDRAFT}[CTAB]; }
 function tabPlaceholder(){
   return {copy:'Write the post, or describe the picture on the tile and it '
@@ -8024,12 +8250,21 @@ let MKT=null, ART={}, MKTSYM=null, MKTAB='all', MCOUNT=null, MSYMS={};
    arrive with is "what is happening", not "what was I last looking at". */
 function setMktab(k){MKTAB=k;drawMarkets();}
 
+/* Which pacing tables are folded, per tab, so a redraw keeps your choice. */
+const paceOpen=k=>{try{return localStorage.getItem('desk.pace.'+k)!=='closed';}catch(e){return true;}};
+function paceSave(k,open){try{localStorage.setItem('desk.pace.'+k,open?'open':'closed');}catch(e){}}
+const paceHead=(k,extra='',top=20)=>`<details class="pace" ${paceOpen(k)?'open':''}
+  ontoggle="paceSave('${k}',this.open)"><summary class="bar2" style="margin-top:${top}px">
+  <h2 style="font-size:19px"><span class="chev" aria-hidden="true">&#9656;</span>Pacing</h2>
+  <span class="spacer"></span>${extra}</summary>`;
+
 /* ---- ads ---- */
 /* The ads tab is its own shelf: its own folders (one per group of ads), its
    own pacing, its own Auto switch. The words that go out are the ad's own,
    from the manifest it was built with, so nothing is edited here but the
    on/off switch. */
 let ADS=null, ADPACE=null, ADGROUP=null;
+let ADSIZE=(()=>{try{return localStorage.getItem('desk.ads.size')||null;}catch(e){return null;}})();
 async function drawAds(force){
   const el=$('#ads');
   if(force||!ADS){
@@ -8042,7 +8277,17 @@ async function drawAds(force){
   }
   const groups=[...new Set(ADS.map(x=>x.property_name||'Ads'))];
   if(ADGROUP&&!groups.includes(ADGROUP)) ADGROUP=null;
-  const shown=ADS.filter(x=>!ADGROUP||(x.property_name||'Ads')===ADGROUP);
+  /* One tile per picture: an ad in three sizes is three tiles. An ad from
+     before sizes were kept has just its one picture. */
+  const tiles=ADS.flatMap(x=>(x.sizes&&x.sizes.length?x.sizes
+      :(x.media?[{size:`${x.media.width}x${x.media.height}`,media_id:x.media.id}]:[{size:'',media_id:null}]))
+    .map(sz=>({ad:x,size:sz.size,media_id:sz.media_id})));
+  const sizeList=[...new Set(tiles.map(t=>t.size).filter(Boolean))]
+    .sort((a,b)=>{const r=s=>{const [w,h]=s.split('x').map(Number);return w/h;};return r(b)-r(a);});
+  if(ADSIZE&&!sizeList.includes(ADSIZE)) ADSIZE=null;
+  const inGroup=x=>!ADGROUP||(x.property_name||'Ads')===ADGROUP;
+  const shown=tiles.filter(t=>inGroup(t.ad)&&(!ADSIZE||t.size===ADSIZE));
+  const count=(g,sz)=>tiles.filter(t=>(!g||(t.ad.property_name||'Ads')===g)&&(!sz||t.size===sz)).length;
   const mode=ADPACE.mode||'manual', live=(ADPACE.channels||[]);
   const plabel=c=>esc((PLAT[c]||{}).label||c);
   const fmt=t=>t?esc(String(t).replace('T',' ').slice(5,16)):'never';
@@ -8052,26 +8297,19 @@ async function drawAds(force){
 
   el.innerHTML=`
     <div class="bar2"><h2>Ads</h2><span class="spacer"></span>
-      <span class="sub">${ADS.length} ad${ADS.length===1?'':'s'} ·
+      <span class="sub">${ADS.length} ad${ADS.length===1?'':'s'}${sizeList.length>1
+        ?` in ${sizeList.length} sizes, ${tiles.length} pictures`:''} ·
         ${ADS.filter(x=>x.active).length} in rotation</span>
       <span class="seg">${['manual','auto'].map(k=>`<button class="${mode===k?'on':''}"
         onclick="setAdMode('${k}')" ${k==='auto'&&!LIVE?'disabled':''}
         title="${k==='auto'&&!AUTOPOST?'Set, but nothing fires until the Auto switch in the header is on':''}"
         >${k}</button>`).join('')}</span>
+      <label class="act" title="Replaces every ad with the set in the zip. You can also drop the zip anywhere on this tab."
+        >Upload .zip<input type="file" accept=".zip,application/zip"
+        hidden onchange="adImport([...this.files]);this.value=''"></label>
       <button class="act" onclick="drawAds(true)">Refresh</button></div>
 
-    <div class="addrop" id="addrop">
-      <span>Drop the ads <b>.zip</b> here: <code>guavy-ads.json</code> and the
-        pictures in their folders. It <b>replaces every ad</b> on this tab with
-        the set in the zip. What has already run is remembered by group and
-        variation, so an ad that ran yesterday still waits its turn.</span>
-      <span class="spacer"></span>
-      <label class="act">Upload .zip<input type="file" accept=".zip,application/zip"
-        hidden onchange="adImport([...this.files]);this.value=''"></label>
-    </div>
-
-    <div class="bar2" style="margin-top:4px"><h2 style="font-size:19px">Pacing</h2>
-      <span class="spacer"></span></div>
+    ${paceHead('ads','',4)}
     <div class="chars" style="margin:-6px 0 9px">${mode==='auto'
       ? (AUTOPOST?'Ads are on automatic and will post within the pacing below.'
          :'<b>Ads are set to Auto, but nothing will fire.</b> Automatic posting is switched off in the header.')
@@ -8079,45 +8317,108 @@ async function drawAds(force){
       The ad that has gone longest without running on a channel goes next;
       none repeats on a channel within ${ADPACE.repeat_days} days. Quiet hours
       ${(ADPACE.quiet_hours||[]).join(' to ')||'not set'}. From <code>channels.yaml</code>.</div>
-    <table class="tbl"><thead><tr><th>Channel</th><th>Per day</th><th>Spacing</th>
+    <table class="tbl"><thead><tr><th>Channel</th><th>Size</th><th>Per day</th><th>Spacing</th>
       <th>Today</th><th>Last ad</th><th>Free to post</th><th></th></tr></thead>
       <tbody>${live.map(c=>`<tr>
-        <td>${plabel(c.channel)}</td><td>${c.per_day}</td><td>${c.spacing}h</td>
+        <td>${plabel(c.channel)}</td>
+        <td>${adSizePick(c)}</td><td>${c.per_day}</td><td>${c.spacing}h</td>
         <td>${c.used_today} of ${c.per_day}</td>
         <td>${c.last?`${fmt(c.last)} <span class="sub">${esc((c.last_headline||'').slice(0,40))}</span>`:'never'}</td>
         <td>${c.due?'<span class="sub">now</span>'
           :`<span class="dim warn">${esc(c.blocked)}${c.next_at&&/spacing/.test(c.blocked)?`, ${c.next_at}`:''}</span>`}</td>
-        <td>${c.blocked==='not connected'?'':`<button class="act" onclick="adFire('${c.channel}')"
-          ${LIVE?'':'disabled'}>Post one now</button>`}</td></tr>`).join('')}</tbody></table>
+        <td>${c.blocked==='not connected'||c.paused?'':`<button class="act" onclick="adFire('${c.channel}')"
+          ${LIVE?'':'disabled'}>Post one now</button>`}</td></tr>`).join('')}</tbody></table></details>
 
-    <div class="folders" style="margin:20px 0 12px">
+    <div class="folders" style="margin:20px 0 6px">
       <button class="fold${ADGROUP===null?' on':''}" onclick="setAdGroup(null)">All
-        <span class="fn">${ADS.length}</span></button>
+        <span class="fn">${count(null,ADSIZE)}</span></button>
       ${groups.map(g=>`<button class="fold${ADGROUP===g?' on':''}"
         onclick="setAdGroup(${esc(JSON.stringify(g))})">${esc(g)}
-        <span class="fn">${ADS.filter(x=>(x.property_name||'Ads')===g).length}</span></button>`).join('')}
+        <span class="fn">${count(g,ADSIZE)}</span></button>`).join('')}
     </div>
-    ${shown.length?`<div class="adgrid">${shown.map(x=>`
-      <div class="adcard${x.active?'':' off'}">
-        ${x.media?`<img src="/media/${x.media.id}/raw" alt="" loading="lazy">`
+    ${sizeList.length>1?`<div class="folders" style="margin:0 0 12px" aria-label="Size">
+      <span class="sub" style="align-self:center;margin-right:2px">Size</span>
+      <button class="fold${ADSIZE===null?' on':''}" onclick="setAdSize2(null)">All
+        <span class="fn">${count(ADGROUP,null)}</span></button>
+      ${sizeList.map(sz=>`<button class="fold${ADSIZE===sz?' on':''}"
+        onclick="setAdSize2('${sz}')">${sz.replace('x','×')}
+        <span class="fn">${count(ADGROUP,sz)}</span></button>`).join('')}
+    </div>`:''}
+    ${shown.length?`<div class="adgrid">${shown.map(({ad:x,size,media_id})=>`
+      <div class="adcard${x.active?'':' off'}" onclick="openAd(${x.id},'${size}')">
+        ${media_id?`<div class="adpic"><img src="/media/${media_id}/raw" alt="" loading="lazy"></div>`
           :'<div class="empty" style="aspect-ratio:1/1">No picture</div>'}
         <div class="body">
           <div class="grp">${esc(x.property_name||'')} · v${x.variation??''}
-            ${x.audience?` · ${esc(x.audience)}`:''}</div>
+            ${size?` · ${size.replace('x','×')}`:''}</div>
           <div class="hl">${esc(x.headline||'')}</div>
           ${x.sub?`<div class="sb">${esc(x.sub)}</div>`:''}
           <div class="cta"><b>${esc(x.cta||'')}</b>
             ${x.url?`<a class="adlink" href="${esc(x.url)}" target="_blank" rel="noopener"
+              onclick="event.stopPropagation()"
               title="${esc(x.url)}">${esc(x.url.replace(/^https?:\/\/(www\.)?/,'').split('?')[0])}
               &#8599;</a>`:''}</div>
           <div class="runs">${runs(x)?esc(runs(x))+' · ':''}${lastRun(x)}</div>
-          <div class="row"><label><input type="checkbox" ${x.active?'checked':''}
-            onchange="adActive(${x.id},this.checked)"> In rotation</label></div>
+          <div class="row" onclick="event.stopPropagation()"><label><input type="checkbox" ${x.active?'checked':''}
+            onchange="adActive(${x.id},this.checked)"> In rotation${(x.sizes||[]).length>1
+              ?` <span class="sub">(all ${x.sizes.length} sizes)</span>`:''}</label></div>
         </div></div>`).join('')}</div>`
       :`<div class="empty"><b>No ads yet.</b> Drag the guavy-ads folder onto this tab.</div>`}`;
   wireAdDrop();
 }
 function setAdGroup(g){ADGROUP=g;drawAds();}
+function setAdSize2(sz){ADSIZE=sz;try{sz?localStorage.setItem('desk.ads.size',sz)
+  :localStorage.removeItem('desk.ads.size');}catch(e){}drawAds();}
+/* The sizes the loaded ads come in, plus the channel's own choice even when
+   no ad has it, so the table says what it wants and what it is making do with. */
+function adSizePick(c){
+  const sizes=(ADPACE.sizes||[]).map(x=>x.size);
+  const opts=sizes.includes(c.size)||!c.size?sizes:[c.size,...sizes];
+  const total=ADPACE.total_ads||0;
+  const note=!c.size_ads?'<div class="sub">none in this set, nearest shape used</div>'
+    :c.size_ads<total?`<div class="sub">${c.size_ads} of ${total} ads; the rest use the nearest shape</div>`:'';
+  return `<select onchange="setAdSize('${c.channel}',this.value)" aria-label="Ad size for ${esc(c.channel)}">
+    ${opts.map(sz=>`<option value="${sz}" ${sz===c.size?'selected':''}>${sz.replace('x','×')}</option>`).join('')}
+    </select>${note}`;
+}
+async function setAdSize(chan,size){
+  const r=await api('/api/ads/size',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({channel:chan,size})});
+  if(r.error){toast(r.error);return;}
+  toast(`${(PLAT[chan]||{}).label||chan} ads: ${size.replace('x','×')}`); drawAds(true);
+}
+async function openAd(id,size){
+  let m=$('#admodal');
+  if(!m){ m=document.createElement('div'); m.id='admodal'; m.className='admodal';
+    m.hidden=true; m.setAttribute('role','dialog'); m.setAttribute('aria-modal','true');
+    m.addEventListener('click',e=>{ if(e.target===m) closeAd(); });
+    document.body.appendChild(m); }
+  const r=await api(`/api/ads/${id}/preview`);
+  if(r.error){toast(r.error);return;}
+  const a=r.ad;
+  const pic=((a.sizes||[]).find(x=>x.size===size)||{}).media_id||(a.media&&a.media.id);
+  m.innerHTML=`<div class="box">
+    <div class="pic">${pic?`<img src="/media/${pic}/raw" alt="${esc(a.headline||'')}">`:''}</div>
+    <div class="txt">
+      <div class="top"><div style="flex:1">
+          <div class="grp">${esc(a.property_name||'')} · v${a.variation??''}${a.audience?` · ${esc(a.audience)}`:''}</div>
+          <h3>${esc(a.headline||'')}</h3></div>
+        <button class="act" onclick="closeAd()" aria-label="Close">&times;</button></div>
+      ${(r.channels||[]).map(c=>`<div class="post">
+        <h4><span style="color:${(PLAT[c.channel]||{}).ink||'#8A8F86'}">&#9632;</span>
+          ${esc((PLAT[c.channel]||{}).label||c.channel)}
+          <span class="sub">${c.paused?'paused, not posting yet':c.body?`${c.chars}${c.limit?` of ${c.limit}`:''} characters`:'does not fit'}
+            · ${esc((c.size||'').replace('x','×'))}${c.exact?'':` (wanted ${esc((c.wanted||'').replace('x','×'))})`}</span></h4>
+        <pre>${esc(c.body||'')}</pre>
+        ${c.first_comment?`<div class="fc">First comment: ${esc(c.first_comment)}</div>`:''}
+      </div>`).join('')}
+    </div></div>`;
+  m.hidden=false;
+  document.addEventListener('keydown',adEsc);
+}
+function closeAd(){ const m=$('#admodal'); if(m) m.hidden=true;
+  document.removeEventListener('keydown',adEsc); }
+function adEsc(e){ if(e.key==='Escape') closeAd(); }
 async function setAdMode(m){
   const r=await api('/api/ads/mode',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:m})});
@@ -8153,14 +8454,14 @@ async function filesFrom(dt){
   return out;
 }
 function wireAdDrop(){
-  const d=$('#ads'), z=$('#addrop'); if(!d||d._wired)return; d._wired=true;
+  const d=$('#ads'); if(!d||d._wired)return; d._wired=true;
   ['dragenter','dragover'].forEach(n=>d.addEventListener(n,e=>{
     if(![...(e.dataTransfer.types||[])].includes('Files'))return;
-    e.preventDefault(); const zz=$('#addrop'); if(zz)zz.classList.add('over');}));
-  d.addEventListener('dragleave',e=>{ if(e.target===d){const zz=$('#addrop'); if(zz)zz.classList.remove('over');}});
+    e.preventDefault(); d.classList.add('over');}));
+  d.addEventListener('dragleave',e=>{ if(!d.contains(e.relatedTarget)) d.classList.remove('over');});
   d.addEventListener('drop',async e=>{
     if(![...(e.dataTransfer.types||[])].includes('Files'))return;
-    e.preventDefault(); const zz=$('#addrop'); if(zz)zz.classList.remove('over');
+    e.preventDefault(); d.classList.remove('over');
     adImport(await filesFrom(e.dataTransfer));
   });
 }
@@ -8259,10 +8560,8 @@ async function drawMarkets(force){
         </div>`:''}
     </div>`).join('')}`;
 
-  const pacing=`<div class="bar2" style="margin-top:20px"><h2 style="font-size:19px"
-      >Pacing</h2><span class="spacer"></span>
-      ${MKT.in_quiet?`<span class="dim warn"><b>now</b>quiet hours</span>`:''}
-    </div>
+  const pacing=`${paceHead('wire',
+      MKT.in_quiet?`<span class="dim warn"><b>now</b>quiet hours</span>`:'')}
     ${on&&!AUTOPOST?`<div class="chars" style="margin:-6px 0 12px">
       <b>${on} market${on===1?' is':'s are'} set to Auto, but nothing will
       fire.</b> Automatic posting is switched off in the header.</div>`:''}
@@ -8308,7 +8607,7 @@ async function drawMarkets(force){
           : `<span class="dim hot">${all
               ? `${tot.free_markets} of ${tot.markets} markets`:'yes'}</span>`}</td>
         </tr>`;}).join('')}
-      </tbody></table>`;
+      </tbody></table></details>`;
 
   /* On All, pacing leads: the question there is whether anything may go out at
      all, and four market cards in front of it is four scrolls of nothing. On a
@@ -9612,7 +9911,7 @@ function openCompose(mkt){
        Seeding both from the body means the variants are there to edit rather
        than empty boxes you have to remember to fill. X still has to be cut to
        280, which its own tab does. */
-    if(BSEED.fanout){ XDRAFT=CDRAFT; LIDRAFT=CDRAFT; FANOUT=true; }
+    if(BSEED.fanout){ XDRAFT=forX(CDRAFT); LIDRAFT=forLi(CDRAFT); FANOUT=true; }
     /* The graphic gets the short form, the copy keeps the deep link. Still
        editable: clearing the field falls back to following the page. */
     if(BSEED.urlShort) URLTEXT=BSEED.urlShort;
@@ -10360,7 +10659,8 @@ function paintCompose(){
         ${(CDRAFT||'').trim()?'':'disabled'}>Copy the copy across</button>
       <span class="chars" id="cwhy" style="flex:1"></span>
     </div>
-    <div class="chars">Keeps the link and the voice, cuts the rest to fit.
+    <div class="chars">${noLink('x')?'X posts go without a link: X charges $0.20 a post that carries one. The graphic prints guavy.com.'
+      :'Keeps the link and the voice, cuts the rest to fit.'}
       Nothing is added that the copy did not already say.</div>`:''}
     ${CTAB==='li'?`<div class="rowb" style="margin-top:8px">
       <button class="act" onclick="pullCopy('li')"
@@ -10368,7 +10668,9 @@ function paintCompose(){
       <span class="chars" style="flex:1">Started from your copy. Put the
         preface on the front and edit the rest however LinkedIn needs it.</span>
     </div>
-    ${LINKFIRST?`<div class="chars">The link comes out of the body and goes in
+    ${noLink('linkedin')?`<div class="chars">LinkedIn posts go without a link:
+      it holds back posts that send people off the site.</div>`
+      :LINKFIRST?`<div class="chars">The link comes out of the body and goes in
       the first comment, so say where it is rather than "read more here".</div>`
       :''}`:''}
     ${CTAB==='copy'?`<div class="rowb" style="margin-top:8px">
@@ -10468,7 +10770,7 @@ async function fitXCopy(){
   const r=await api('/api/compose/shorten',{method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({copy:XDRAFT, profile:PROF, channel:'x'})});
-  if(r&&r.copy){ XDRAFT=r.copy; repaintCompose(); toast('X copy cut to fit'); }
+  if(r&&r.copy){ XDRAFT=forX(r.copy); repaintCompose(); toast('X copy cut to fit'); }
   if(why) why.textContent='';
 }
 
@@ -10478,9 +10780,9 @@ async function shortenForX(){
   const why=$('#cwhy'); if(why) why.textContent='Cutting it down\u2026';
   const r=await api('/api/compose/shorten',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({copy:CDRAFT, profile:PROF, channel:'x'})});
+    body:JSON.stringify({copy:forX(CDRAFT), profile:PROF, channel:'x'})});
   if(r.error){ if(why) why.textContent=r.error; toast('Could not shorten it'); return; }
-  XDRAFT=r.copy||''; CTAB='x'; paintCompose();
+  XDRAFT=forX(r.copy); CTAB='x'; paintCompose();
   const w=$('#cwhy');
   if(w) w.textContent=(r.why||'')+(r.over?` Still ${r.over} over, so trim it.`:'');
   toast(r.over?`${r.counts} characters, still over`:`${r.counts} characters`);
