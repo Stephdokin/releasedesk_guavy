@@ -853,6 +853,9 @@ def api_accounts():
                 label=ch.get("label") or (plats.get(plat) or {}).get("label") or plat,
                 ink=(plats.get(plat) or {}).get("ink", "#8A8F86"),
                 delivery=ch.get("delivery") or "zernio",
+                # A channel that carries some markets only (@GuavyForex) is
+                # offered for posts about those markets, and nothing else.
+                only=((markets_cfg().get("channels") or {}).get(chan) or {}).get("only") or [],
                 free_slots=free, on=chan in defaults))
     return jsonify(out)
 
@@ -1745,11 +1748,17 @@ def compose():
     prof_data = profiles().get(b.get("profile") or lead["profile"]) or {}
     made, skipped = [], []
 
+    post_market = (_inst.get("market") or "").strip()
     for a in accounts:
         chan, prof = a.get("channel"), a.get("profile") or lead["profile"]
         ch = (cfg.get("channels") or {}).get(chan) or {}
         plat = ch.get("platform") or (chan or "").split("_")[0]
         pspec = (cfg.get("platforms") or {}).get(plat) or {}
+        only = ((markets_cfg().get("channels") or {}).get(chan) or {}).get("only")
+        if only and post_market not in only:
+            skipped.append(dict(channel=chan, why=f"carries {', '.join(only)} "
+                                                  f"posts only"))
+            continue
 
         # Each channel owns its own row, so the variant is resolved here rather
         # than again at push time. Checked before the slot is claimed: slot_for
@@ -5839,6 +5848,17 @@ nav .count{color:var(--case);background:var(--ok);border-radius:9px;
 .adcard:hover{border-color:var(--dim)}
 #ads.over{outline:2px dashed var(--brand);outline-offset:6px}
 /* Pacing tables fold up under their heading. Open unless you closed it. */
+/* ---- top 10 ---- */
+.toptbl td.num,.toptbl th{text-align:right}
+.toptbl th:nth-child(-n+4),.toptbl td:nth-child(-n+4){text-align:left}
+.toptbl td.num.on{color:var(--ink);font-weight:600}
+.toptbl .toppost{max-width:380px}
+.toptbl .toppost a{color:inherit;text-decoration:none}
+.toptbl .toppost a:hover{text-decoration:underline}
+.thsort{background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer}
+.thsort.on{color:var(--ink)}
+.thsort:hover{color:var(--ink);text-decoration:underline}
+.thsort:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 details.pace>summary{list-style:none;cursor:pointer}
 details.pace>summary::-webkit-details-marker{display:none}
 details.pace>summary .chev{display:inline-block;width:14px;color:var(--dim);
@@ -8581,7 +8601,8 @@ async function drawMarkets(force){
     <table class="tbl"><thead><tr><th>Channel</th><th>No sooner than</th>
       <th>${MKTAB==='all'?'Today, all markets':'Today'}</th>
       <th>Min clout</th><th>Last post</th><th>Free to post</th></tr></thead>
-      <tbody>${(MKT.channels||[]).map(c=>{
+      <tbody>${(MKT.channels||[]).filter(c=>MKTAB==='all'||!(c.only&&c.only.length)
+          ||c.only.includes(MKTAB)).map(c=>{
         const all=MKTAB==='all', tot=c.total||{}, one=(c.per_market||{})[MKTAB]||{};
         const used=all?tot.used_today:one.used_today;
         const cap=all?tot.per_day:c.per_day;
@@ -9198,9 +9219,46 @@ async function drawFollowers(force){
     +(rows.length?`<div class="bar2"><h2>What it earned</h2>
         <span class="spacer"></span>
         <span class="sub">${rows.length} of ${all.length} posts</span></div>`
-        +statTiles(tot,rows)
+        +statTiles(tot,rows)+topTable(rows)
       :`<div class="empty"><b>No posts in that range.</b></div>`);
   wirePubTip();
+}
+
+/* The ten posts that earned most, by whichever measure you sort on. A metric
+   the platform never reports is a dash, not a zero, and sorts below every
+   real number: LinkedIn has no views and X reports nothing yet, and ranking
+   them at 0 would read as "nobody saw it". */
+const TOPCOLS=[['views','Views'],['impressions','Impressions'],['reach','Reach'],
+  ['likes','Likes'],['comments','Comments'],['shares','Shares'],['saves','Saves']];
+let TOPSORT=(()=>{try{return localStorage.getItem('desk.top.sort')||'impressions';}catch(e){return 'impressions';}})();
+function setTopSort(k){TOPSORT=k;try{localStorage.setItem('desk.top.sort',k);}catch(e){}drawFollowers();}
+function topTable(rows){
+  const seen=(PUB&&PUB.reports)||{};
+  const has=(r,k)=>!!(seen[r.platform]||{})[k]&&!r.awaiting;
+  const val=(r,k)=>has(r,k)?(r[k]||0):-1;
+  const top=rows.slice().sort((a,b)=>val(b,TOPSORT)-val(a,TOPSORT)
+    ||(b.when||'').localeCompare(a.when||'')).slice(0,10);
+  if(!top.length) return '';
+  const label=(METRICS[TOPSORT]||TOPCOLS.find(c=>c[0]===TOPSORT)?.[1]||TOPSORT).toLowerCase();
+  return `<div class="bar2" style="margin-top:22px"><h2 style="font-size:19px">Top 10</h2>
+      <span class="spacer"></span><span class="sub">by ${esc(label)}, of ${rows.length} posts.
+      Click a column to rank by it.</span></div>
+    <div class="barwrap"><table class="tbl toptbl"><thead><tr>
+      <th>#</th><th>Date</th><th>Where</th><th>Post</th>
+      ${TOPCOLS.map(([k,l])=>`<th aria-sort="${k===TOPSORT?'descending':'none'}">
+        <button class="thsort${k===TOPSORT?' on':''}" onclick="setTopSort('${k}')">${l}${
+          k===TOPSORT?' &#9662;':''}</button></th>`).join('')}
+    </tr></thead><tbody>${top.map((r,i)=>`<tr>
+      <td>${i+1}</td>
+      <td style="white-space:nowrap">${esc(niceDay((r.when||'').slice(0,10)))}</td>
+      <td style="white-space:nowrap"><span style="color:${(PLAT[r.platform]||{}).ink||'#8A8F86'}">&#9632;</span>
+        ${esc((PLAT[r.platform]||{}).label||r.platform)}
+        <div class="sub">${esc(r.account||'')}</div></td>
+      <td class="toppost">${r.url?`<a class="linky" href="${esc(r.url)}" target="_blank"
+        rel="noopener">${esc(opener(r.content)||'(no text)')}</a>`:esc(opener(r.content)||'(no text)')}
+        ${r.awaiting?'<div class="sub">numbers pending</div>':''}</td>
+      ${TOPCOLS.map(([k])=>`<td class="num${k===TOPSORT?' on':''}">${has(r,k)?exact(r[k]||0):'&mdash;'}</td>`).join('')}
+    </tr>`).join('')}</tbody></table></div>`;
 }
 
 /* Which platforms in this selection never report a metric at all. A zero that
@@ -9869,6 +9927,9 @@ let ROLES={}, WANT=new Set(), COMPOSE=false, BSEED=null, BTITLE='', BSRC=[];
    tab: {market, symbol, scope}. Everything else opens without one, and it is
    cleared here so a brand scope cannot leak from a Markets post onto the next
    thing you compose from Media or Blogs. */
+/* An account limited to some markets (@GuavyForex) belongs on a post about
+   one of them and nowhere else, so the sheet does not offer it otherwise. */
+const acctFits=a=>!(a.only&&a.only.length)||!!(MKTSYM&&a.only.includes(MKTSYM.market));
 function openCompose(mkt){
   COMPOSE=true;
   MKTSYM=mkt||null;
@@ -9877,7 +9938,10 @@ function openCompose(mkt){
   if(!mkt) MKSCORE=null;        // not a Wire post, so no scoring to show
   ROLES={}; PREVIEW=null; TITLE=null; PICKING=false;
   SECTS=null; SECTI=0; URLTEXT=null;
-  WANT=new Set(ACCTS.filter(a=>a.on).map(a=>a.channel+'|'+a.profile));
+  /* Ticked: the usual accounts, plus a dedicated one when the post is its
+     market, so an FX story goes to @GuavyForex without being asked. */
+  WANT=new Set(ACCTS.filter(a=>acctFits(a)&&(a.on||(a.only&&a.only.length)))
+    .map(a=>a.channel+'|'+a.profile));
   /* Your description of the picture is the starting point, not a separate
      field you fill in twice. Edit it here and the post is yours.
 
@@ -10703,7 +10767,7 @@ function paintCompose(){
 
     <label>Post to</label>
     <div class="pick" style="max-height:none">
-      ${ACCTS.map(a=>{const k=a.channel+'|'+a.profile;return `<label class="slot">
+      ${ACCTS.filter(acctFits).map(a=>{const k=a.channel+'|'+a.profile;return `<label class="slot">
         <input type="checkbox" ${WANT.has(k)?'checked':''}
           onchange="this.checked?WANT.add('${k}'):WANT.delete('${k}')">
         <span style="color:${a.ink}">&#9632;</span>
