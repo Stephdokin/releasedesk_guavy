@@ -4401,6 +4401,18 @@ def zernio_published():
                       "shares", "saves"):
                 if (a.get(k) or 0) > 0:
                     seen[k] = True
+    # Seen: how many times a post was shown, in whichever word its platform
+    # counts it. Instagram reports views and impressions as the same number,
+    # LinkedIn impressions only, YouTube and TikTok views only, so neither
+    # column alone compares platforms; this one does.
+    for plat, got in reports.items():
+        if got.get("views") or got.get("impressions"):
+            got["seen"] = True
+    for row in out:
+        got = reports.get(row.get("platform")) or {}
+        row["seen"] = (row.get("views") if got.get("views")
+                       else row.get("impressions") if got.get("impressions")
+                       else None)
 
     out.sort(key=lambda p: p.get("when") or "", reverse=True)
     # The floor follows the data. Zernio backfilled about twelve weeks when the
@@ -6374,6 +6386,10 @@ select.slim{max-width:150px;padding:5px 7px;font-size:13px}
 .folllist .d.down{color:var(--no)}
 /* Seven across, always on one line. They shrink rather than wrap. */
 .tiles.row7{grid-template-columns:repeat(7,minmax(0,1fr))}
+.tiles.row6{grid-template-columns:repeat(6,minmax(0,1fr))}
+.tiles.row6 .tile{padding:14px 10px}
+.tiles.row6 .n{font-size:23px;letter-spacing:-.01em}
+@media(max-width:760px){.tiles.row6{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .tiles.row7 .tile{padding:14px 10px}
 .tiles.row7 .n{font-size:23px;letter-spacing:-.01em}
 .tiles.row7 .l{font-size:12px;white-space:nowrap;overflow:hidden;
@@ -9228,9 +9244,10 @@ async function drawFollowers(force){
    the platform never reports is a dash, not a zero, and sorts below every
    real number: LinkedIn has no views and X reports nothing yet, and ranking
    them at 0 would read as "nobody saw it". */
-const TOPCOLS=[['views','Views'],['impressions','Impressions'],['reach','Reach'],
+const TOPCOLS=[['seen','Seen'],['reach','Reach'],
   ['likes','Likes'],['comments','Comments'],['shares','Shares'],['saves','Saves']];
-let TOPSORT=(()=>{try{return localStorage.getItem('desk.top.sort')||'impressions';}catch(e){return 'impressions';}})();
+let TOPSORT=(()=>{try{const v=localStorage.getItem('desk.top.sort')||'seen';
+  return v==='views'||v==='impressions'?'seen':v;}catch(e){return 'seen';}})();
 function setTopSort(k){TOPSORT=k;try{localStorage.setItem('desk.top.sort',k);}catch(e){}drawFollowers();}
 function topTable(rows){
   const seen=(PUB&&PUB.reports)||{};
@@ -9271,8 +9288,8 @@ function silentOn(metric,rows){
 }
 function statTiles(tot,rows){
   rows=rows||[];
-  return `<div class="tiles row7">${[['Views','views'],
-    ['Impressions','impressions'],['Reach','reach'],['Likes','likes'],
+  return `<div class="tiles row6">${[['Seen','seen'],
+    ['Reach','reach'],['Likes','likes'],
     ['Comments','comments'],['Shares','shares'],['Saves','saves']]
     .map(([l,k])=>{
       const n=tot(k), quiet=silentOn(k,rows);
@@ -9349,7 +9366,9 @@ function followerBlock(){
 
 /* Published posts over time, stacked by platform. */
 let PBUCKETS=[], PMETRIC=localStorage.getItem('desk.pmetric')||'posts';
-const METRICS={posts:'Posts', views:'Views', impressions:'Impressions',
+/* Views and Impressions became Seen; a choice saved before then follows it. */
+if(PMETRIC==='views'||PMETRIC==='impressions') PMETRIC='seen';
+const METRICS={posts:'Posts', seen:'Seen',
   reach:'Reach', likes:'Likes', followers:'Followers'};
 /* Followers is a level, not a sum: a bar is each platform's count at the end
    of its period, stacked. The history lives with the Numbers tab, so the
@@ -9426,10 +9445,10 @@ function timeline(rows){
     }
     const m=(meta[k]=meta[k]||{});
     const p=(m[r.platform]=m[r.platform]||{n:0,likes:0,comments:0,shares:0,
-      views:0,impressions:0,reach:0,lines:[]});
+      views:0,impressions:0,reach:0,seen:0,lines:[]});
     p.n+=1; p.likes+=r.likes||0; p.comments+=r.comments||0;
     p.shares+=r.shares||0; p.reach+=r.reach||0;
-    p.views+=r.views||0; p.impressions+=r.impressions||0;
+    p.views+=r.views||0; p.impressions+=r.impressions||0; p.seen+=r.seen||0;
     const o=opener(r.content); if(o) p.lines.push(o);
   });
   const dates=rows.map(r=>(r.when||'').slice(0,10)).filter(Boolean).sort();
@@ -9508,17 +9527,17 @@ function wirePubTip(){
     }
     t.innerHTML=`<h4>${esc(brange(d.key,PPERIOD))}</h4>
       ${live.length?`<div class="r hdr"><b></b><span></span>
-        <i>posts</i><i>&#9654;</i><i>&#9829;</i><i>&#128172;</i></div>`:''}
+        <i>posts</i><i title="seen">&#128065;</i><i>&#9829;</i><i>&#128172;</i></div>`:''}
       ${live.map(pl=>{const m=d.meta[pl]||{};
         return `<div class="r${pl===on?' on':''}">
           <b style="background:${PLAT[pl].ink}"></b>
           <span>${esc(PLAT[pl].label)}</span>
-          <i>${m.n}</i><i>${num(m.views||0)}</i>
+          <i>${m.n}</i><i>${num(m.seen||0)}</i>
           <i>${num(m.likes||0)}</i><i>${num(m.comments||0)}</i>
         </div>`;}).join('')
        ||'<div class="r"><span>Nothing published</span></div>'}
       ${posts?`<div class="tot">${posts} post${posts===1?'':'s'} ·
-        ${num(sum('views'))} views · ${num(sum('likes'))} likes ·
+        ${num(sum('seen'))} seen · ${num(sum('likes'))} likes ·
         ${num(sum('comments'))} comments</div>`:''}
       ${lines.length?`<div class="said">${lines.slice(0,3).map(l=>
         `<div>${esc(l)}</div>`).join('')}${lines.length>3
